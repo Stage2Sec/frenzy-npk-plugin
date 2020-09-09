@@ -1,83 +1,64 @@
 import { basename } from "path"
 import http from "http"
 
-import { AppInfo, PluginInfo, asEventEmitter, Plugin } from "@frenzy/util"
+import { Slack, PluginInfo, Plugin } from "@frenzy/util"
+import * as markdown from "@frenzy/markdown"
 
 import { npkCognito } from "./lib/npk-cognito"
 import { npkPricing } from "./lib/npk-pricing"
 import { npkS3 } from "./lib/npk-s3"
 import { npkCampaign } from "./lib/npk-campaign"
 
-let app: AppInfo
+let slack: Slack
 
-function processSlackEvent(event) {
-    console.log(event)
-    switch (event.type) {
-        case "app_mention":
-            if (event.text.includes("show instances")) {
-                // app.slack.webClient.chat.postMessage({
-                //     channel: event.channel,
-                //     "blocks": [
-                //         {
-                //             "type": "section",
-                //             "block_id": "instances",
-                //             "text": {
-                //                 "type": "mrkdwn",
-                //                 "text": "Pick an instance from the dropdown list"
-                //             },
-                //             "accessory": {
-                //                 "type": "external_select",
-                //                 "placeholder": {
-                //                     "type": "plain_text",
-                //                     "text": "Select an instance",
-                //                     "emoji": true
-                //                 }
-                //             }
-                //         }
-                //     ]
-                // })
+
+
+function setupSlackEvents(){
+    slack.events.dotCommand("campaigns", async (event) => {
+        console.log("dotCommand: ", event)
+        try {
+            switch (event.dotCommandPayload) {
+                case "get":
+                    break;
+                case "getAll":
+                    let campaigns = await npkCampaign.getAll()
+                    slack.webClient.chat.postMessage({
+                        channel: event.channel,
+                        text: markdown.codeBlock(campaigns),
+                        mrkdwn: true
+                    })
+                    break;
+                case "create":
+                    break;
+                case "start":
+                    break;
+                case "cancel":
+                    break;
+                case "status":
+                    break;
             }
-            break;
-        case "file_shared":
-            break;
-        case "message.groups":
-            break;
-        case "message.im":
-            break;
-        case "message.mpim":
-            break;
-        case "message.channels":
-            break;
-        default:
-            break;
-    }
+        } catch (error) {
+            slack.webClient.chat.postMessage({
+                channel: event.channel,
+                text: error.text
+            })
+        }
+    })
+    slack.events.dotCommand("hashes", (event) => {
+
+    })
+    slack.events.dotCommand("wordlists", (event) => {
+        
+    })
 }
-
-async function initialize() {
-
-    await npkCognito.init()
-
-    npkCampaign.init()
-    npkS3.init()
-    npkPricing.init()
-
-    let event = asEventEmitter(app.slack.events)
-    event?.on("app_mention", processSlackEvent)
-    event?.on("message.channels", processSlackEvent)
-    event?.on("message.im", processSlackEvent)
-    event?.on("message.mpim", processSlackEvent)
-    event?.on("message.groups", processSlackEvent)
-    event?.on("file_shared", processSlackEvent)
-    event?.on("file_created", processSlackEvent)
-
-    app.slack.interactions.action({
+function setupSlackInteractions() {
+    slack.interactions.action({
         blockId: "instances"
     }, (payload, respond) => {
         console.log(payload)
     })
 
-    
-    app.slack.interactions.options({
+    slack.interactions.options({
         within: "block_actions",
         blockId: "instances"
     }, async (payload) => {
@@ -108,6 +89,17 @@ async function initialize() {
             ]
         }
     })
+}
+
+async function initialize() {
+    await npkCognito.init()
+
+    npkCampaign.init()
+    npkS3.init()
+    npkPricing.init()
+
+    setupSlackEvents()
+    //setupSlackInteractions()
 }
 
 // const authRouter = express.Router()
@@ -294,9 +286,8 @@ async function initialize() {
 //     console.log(`App listening at http://localhost:${port}`)
 // })
 
-const plugin: Plugin = async (appInfo) => {
-    app = appInfo
-
+const plugin: Plugin = async (s) => {
+    slack = s
     await initialize()
 
     let pluginInfo: PluginInfo = {
