@@ -4,6 +4,7 @@ import aws4 from 'aws4'
 
 import { settings } from "@npk/settings"
 import { prepare } from "./http-utils"
+import { setTimeout } from "timers"
 
 interface AwsSignerOptions {
    region: string,
@@ -52,8 +53,16 @@ export class NpkCognito {
       await this.authenticateBotUser()
       await this.restoreSession()
       await this.retrieveCredentials()
+
+      setTimeout(this.refreshSession.bind(this), this.sessionExpiresIn() - 300000)
    }
-   
+
+   private sessionExpiresIn() {
+      let exp = new Date(this.cognitoUserSession.accessToken.payload.exp * 1000)
+      let now = new Date()
+      return exp.getTime() - now.getTime()
+   }
+
    public signAPIRequest(params: any): any {
       prepare(params)
       params.headers = this.cognitoSigner.sign(params)
@@ -67,20 +76,25 @@ export class NpkCognito {
       }
    }
 
-   public async refreshSession(): Promise<any> {
-      await (new Promise((success, failure) => {
-         if (!this.cognitoUser || !this.cognitoUserSession) {
-            return failure("Not initialized!")
-         }
-         this.cognitoUser.refreshSession(this.cognitoUserSession.refreshToken, (error, session) => {
-            if (error) {
-               return failure(error)
+   public async refreshSession() {
+      try {
+         await (new Promise((success, failure) => {
+            if (!this.cognitoUser || !this.cognitoUserSession) {
+               return failure("Not initialized!")
             }
-            this.cognitoUserSession = session
-            return success(true)
-         })
-      }))
-      return this.retrieveCredentials()
+            this.cognitoUser.refreshSession(this.cognitoUserSession.refreshToken, (error, session) => {
+               if (error) {
+                  return failure(error)
+               }
+               this.cognitoUserSession = session
+               return success(true)
+            })
+         }))
+         await this.retrieveCredentials()
+         setTimeout(this.refreshSession.bind(this), this.sessionExpiresIn() - 300000)
+      } catch (error) {
+         console.error("Failed to refresh AWS session\n", error)
+      }
    }
 
    public restoreSession(): Promise<boolean> {
