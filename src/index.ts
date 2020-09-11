@@ -1,5 +1,9 @@
 import { basename } from "path"
 import http from "http"
+import { config } from "aws-sdk"
+import { createCommand } from "commander"
+import stringArgv from 'string-argv';
+import { Option } from "@slack/web-api";
 
 import { Slack, PluginInfo, Plugin } from "@frenzy/util"
 import * as markdown from "@frenzy/markdown"
@@ -8,87 +12,398 @@ import { npkCognito } from "./lib/npk-cognito"
 import { npkPricing } from "./lib/npk-pricing"
 import { npkS3 } from "./lib/npk-s3"
 import { npkCampaign } from "./lib/npk-campaign"
+import { request } from "./lib/http-utils"
+import { settings } from "@npk/settings"
 
 let slack: Slack
 
-
-
-function setupSlackEvents(){
-    slack.events.dotCommand("campaigns", async (event) => {
-        console.log("dotCommand: ", event)
-        try {
-            switch (event.dotCommandPayload) {
-                case "get":
-                    break;
-                case "getAll":
-                    let campaigns = await npkCampaign.getAll()
-                    slack.webClient.chat.postMessage({
-                        channel: event.channel,
-                        text: markdown.codeBlock(campaigns),
-                        mrkdwn: true
-                    })
-                    break;
-                case "create":
-                    break;
-                case "start":
-                    break;
-                case "cancel":
-                    break;
-                case "status":
-                    break;
+function getS3Info(type: "hash" | "wordlist" | "rule") {
+    let region = config.region || ""
+    switch(type){
+        case "hash":
+            return {
+                bucket: settings.USERDATA_BUCKET,
+                keyPrefix: "self/uploads",
+                region: region
             }
-        } catch (error) {
-            slack.webClient.chat.postMessage({
+        case "wordlist":
+            return {
+                bucket: settings.DICTIONARY_BUCKETS[region],
+                keyPrefix: "wordlist",
+                region: region
+            }
+        case "rule":
+            return {
+                bucket: settings.DICTIONARY_BUCKETS[region],
+                keyPrefix: "rules",
+                region: region
+            }
+    }
+}
+
+async function uploadHashFile(name: string, data: any) {
+    let { bucket, keyPrefix, region } = getS3Info("hash")
+    let result = await npkS3.putObject(bucket, `${keyPrefix}/${name}`, data, region)
+    return result
+}
+
+
+function setupSlack(){
+    // Setup Static Options
+    slack.addOptions("hashTypes", Object.keys(npkPricing.hashTypes).map(name => slack.createOption(name, npkPricing.hashTypes[name])))
+
+    // Setup dot commands
+    slack.dotCommand("npk", async (event) => {
+        try {
+            // Upload hash file
+            if ((event.subtype && event.subtype == "file_share") || event.files) {
+                event.files.forEach(async (file: any) => {
+                    let params = {
+                        method: 'GET',
+                        url: file.url_private,
+                        headers: {
+                            "Authorization": `Bearer ${slack.client.token}`
+                        }
+                    }
+                    let contents = await request(params)
+                    let result = await uploadHashFile(file.name, contents)
+                    console.log("Hash upload result")
+                    console.log(result)
+                });
+                return
+            }
+
+            // Send NPK Menu
+            await slack.postMessage({
                 channel: event.channel,
-                text: error.text
+                text: "Menu",
+                blocks: [
+                    {
+                        type: "actions",
+                        elements: [
+                            {
+                                type: "button",
+                                action_id: "openCampaignModal",
+                                style: "primary",
+                                text: {
+                                    type: "plain_text",
+                                    text: "Create Campaign",
+                                    emoji: true
+                                }
+                            }
+                        ]
+                    }
+                ]
             })
+        } catch (error) {
+            console.error(error)
         }
     })
-    slack.events.dotCommand("hashes", (event) => {
-
-    })
-    slack.events.dotCommand("wordlists", (event) => {
-        
-    })
-}
-function setupSlackInteractions() {
-    slack.interactions.action({
-        blockId: "instances"
-    }, (payload, respond) => {
-        console.log(payload)
+    
+    // Open Campaign Modal
+    slack.interactions.action({actionId: "openCampaignModal"}, (payload, respond) => {
+        slack.openModal({
+            modal: {
+                callback_id: "campaign",
+                submit: {
+                    text: "Create",
+                    type: "plain_text",
+                    emoji: true
+                },
+                title: {
+                    text: "Create NPK Campaign",
+                    type: "plain_text",
+                    emoji: true
+                },
+                blocks: [
+                    {
+                        block_id: "hashTypes",
+                        type: "input",
+                        label: {
+                            type: "plain_text",
+                            text: "Choose hash type",
+                            emoji: true
+                        },
+                        element: {
+                            type: "external_select",
+                            action_id: "selection",
+                            min_query_length: 1,
+                            placeholder: {
+                                text: "Type",
+                                type: "plain_text",
+                                emoji: true
+                            }
+                        }
+                    },
+                    {
+                        block_id: "hashFile",
+                        type: "input",
+                        label: {
+                            type: "plain_text",
+                            text: "Choose hash file",
+                            emoji: true
+                        },
+                        element: {
+                            type: "external_select",
+                            action_id: "selection",
+                            min_query_length: 1,
+                            placeholder: {
+                                text: "File",
+                                type: "plain_text",
+                                emoji: true
+                            }
+                        }
+                    },
+                    {
+                        block_id: "wordlist",
+                        type: "input",
+                        label: {
+                            type: "plain_text",
+                            text: "Choose wordlist",
+                            emoji: true
+                        },
+                        element: {
+                            type: "external_select",
+                            action_id: "selection",
+                            min_query_length: 1,
+                            placeholder: {
+                                text: "Wordlist",
+                                type: "plain_text",
+                                emoji: true
+                            }
+                        }
+                    },
+                    {
+                        block_id: "rules",
+                        type: "input",
+                        label: {
+                            type: "plain_text",
+                            text: "Choose rules",
+                            emoji: true
+                        },
+                        element: {
+                            type: "multi_external_select",
+                            action_id: "selection",
+                            min_query_length: 1,
+                            placeholder: {
+                                text: "Rules",
+                                type: "plain_text",
+                                emoji: true
+                            }
+                        }
+                    }
+                ],
+            },
+            trigger_id: payload.trigger_id
+        })
     })
 
     slack.interactions.options({
         within: "block_actions",
-        blockId: "instances"
-    }, async (payload) => {
-        console.log(payload)
-        let instancePrices = await npkPricing.getInstancePrices()
+        blockId: "hashTypes",
+        actionId: "selection"
+    }, (payload) => {
+        let search: string = payload.value.toLowerCase()
+        let options = slack.getOptions("hashTypes")
+        let startsWith = options.filter(o => o.text.text.toLowerCase().startsWith(search))
+        let includes = options.filter(o => {
+            return o.text.text.toLowerCase().includes(search) &&
+            !startsWith.includes(o)
+        })
+
+        if (startsWith.length + includes.length > 100) {
+            options = startsWith
+        } else {
+            options = [
+                ...startsWith,
+                ...includes
+            ]
+        }
         return {
-            options: [{
-                    text: {
-                        type: 'plain_text',
-                        text: "G3",
-                    },
-                    value: instancePrices.idealG3Instance.instanceType,
-                },
-                {
-                    text: {
-                        type: 'plain_text',
-                        text: "P2",
-                    },
-                    value: instancePrices.idealP2Instance.instanceType,
-                },
-                {
-                    text: {
-                        type: 'plain_text',
-                        text: "P3",
-                    },
-                    value: instancePrices.idealP3Instance.instanceType,
-                },
+            options: options
+        }
+    })
+    slack.interactions.options({
+        within: "block_actions",
+        blockId: "hashFile",
+        actionId: "selection"
+    }, async (payload) => {
+        let options: Array<Option>
+        try {
+            let s3 = getS3Info("hash")
+            let hashes = await npkS3.listBucketFiles(s3.bucket, s3.keyPrefix, s3.region)
+            options = hashes.map((file) => slack.createOption(file, file))
+        } catch (error) {
+            console.error(error)
+            options = []
+        }
+        options.splice(0, 0, slack.createOption(" ", " "))
+        return {
+            options: [
+                ...options
             ]
         }
     })
+    slack.interactions.options({
+        within: "block_actions",
+        blockId: "wordlist",
+        actionId: "selection"
+    }, async (payload) => {
+        let options: Array<Option>
+        try {
+            let s3 = getS3Info("wordlist")
+            let wordlists = await npkS3.listBucketFiles(s3.bucket, s3.keyPrefix, s3.region)
+            options = wordlists.map((file) => slack.createOption(file, file))
+        } catch (error) {
+            console.error(error)
+            options = []
+        }
+
+        return {
+            options: [
+                ...options
+            ]
+        }
+    })
+    slack.interactions.options({
+        within: "block_actions",
+        blockId: "rules",
+        actionId: "selection"
+    }, async (payload) => {
+        let options: Array<Option>
+        try {
+            let s3 = getS3Info("rule")
+            let rules = await npkS3.listBucketFiles(s3.bucket, s3.keyPrefix, s3.region)
+            options = rules.map((file) => slack.createOption(file, file))
+        } catch (error) {
+            console.error(error)
+            options = []
+        }
+
+        return {
+            options: [
+                ...options
+            ]
+        }
+    })
+    slack.interactions.viewSubmission({callbackId: "campaign"}, (payload) => {
+        console.log("Values")
+        console.log(payload.view.state.values)
+    })
+
+    // slack.interactions.options({
+    //     within: "block_actions",
+    //     blockId: "instances"
+    // }, async (payload) => {
+    //     console.log(payload)
+    //     let instancePrices = await npkPricing.getInstancePrices()
+    //     return {
+    //         options: [{
+    //                 text: {
+    //                     type: 'plain_text',
+    //                     text: "G3",
+    //                 },
+    //                 value: instancePrices.idealG3Instance.instanceType,
+    //             },
+    //             {
+    //                 text: {
+    //                     type: 'plain_text',
+    //                     text: "P2",
+    //                 },
+    //                 value: instancePrices.idealP2Instance.instanceType,
+    //             },
+    //             {
+    //                 text: {
+    //                     type: 'plain_text',
+    //                     text: "P3",
+    //                 },
+    //                 value: instancePrices.idealP3Instance.instanceType,
+    //             },
+    //         ]
+    //     }
+    // })
+    // let campaignsParser = createCommand()
+    // campaignsParser.option('-c, --cheese <type>');
+    // slack.dotCommand({ command: "campaigns", parser: campaignsParser }, async (event) => {
+    //     console.log("dotCommand: ", event)
+    //     try {
+    //         switch (event.dotCommandPayload) {
+    //             case "get":
+    //                 break;
+    //             case "getAll":
+    //                 let campaigns = await npkCampaign.getAll()
+    //                 slack.client.chat.postMessage({
+    //                     channel: event.channel,
+    //                     text: markdown.codeBlock(campaigns),
+    //                     mrkdwn: true
+    //                 })
+    //                 break;
+    //             case "create":
+    //                 break;
+    //             case "start":
+    //                 break;
+    //             case "cancel":
+    //                 break;
+    //             case "status":
+    //                 break;
+    //         }
+    //     } catch (error) {
+    //         slack.postError(event.channel, error)
+    //     }
+    // })
+    // slack.dotCommand("hashes", async (event) => {
+    //     try {
+    //         let s3 = getS3Info("hash")
+    //         switch (event.dotCommandPayload) {
+    //             case "get":
+    //                 break;
+    //             case "getAll":
+    //                 let hashes = await npkS3.listBucketFiles(s3.bucket, s3.keyPrefix, s3.region)
+    //                 slack.client.chat.postMessage({
+    //                     channel: event.channel,
+    //                     text: markdown.codeBlock(hashes),
+    //                     mrkdwn: true
+    //                 })
+    //                 break;
+    //             case "create":
+    //                 break;
+    //             case "start":
+    //                 break;
+    //             case "cancel":
+    //                 break;
+    //             case "status":
+    //                 break;
+    //         }
+    //     } catch (error) {
+    //         slack.postError(event.channel, error)
+    //     }
+    // })
+    // slack.dotCommand("wordlists", async (event) => {
+    //     try {
+    //         let s3 = getS3Info("wordlist")
+    //         let wordlists = await npkS3.listBucketFiles(s3.bucket, s3.keyPrefix, s3.region)
+    //         slack.postMessage({
+    //             channel: event.channel,
+    //             text: markdown.codeBlock(wordlists),
+    //             mrkdwn: true
+    //         })
+    //     } catch (error) {
+    //         slack.postError(event.channel, error)
+    //     }
+    // })
+    // slack.dotCommand("rules", async (event) => {
+    //     try {
+    //         let s3 = getS3Info("rule")
+    //         let rules = await npkS3.listBucketFiles(s3.bucket, s3.keyPrefix, s3.region)
+    //         slack.postMessage({
+    //             channel: event.channel,
+    //             text: markdown.codeBlock(rules),
+    //             mrkdwn: true
+    //         })
+    //     } catch (error) {
+    //         slack.postError(event.channel, error)
+    //     }
+    // })
 }
 
 async function initialize() {
@@ -96,10 +411,9 @@ async function initialize() {
 
     npkCampaign.init()
     npkS3.init()
-    npkPricing.init()
+    await npkPricing.init()
 
-    setupSlackEvents()
-    //setupSlackInteractions()
+    setupSlack()
 }
 
 // const authRouter = express.Router()

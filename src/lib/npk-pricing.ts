@@ -45,7 +45,7 @@ export class NpkPricing {
             apiVersion: '2016-11-15',
             region: 'us-west-2'
         })
-        this.getInstancePrices().then(() => console.log("Instance prices loaded"))
+        return this.getInstancePrices()
     }
 
     public getSpotPriceHistory(instanceType: string, forceRegion?: string) {
