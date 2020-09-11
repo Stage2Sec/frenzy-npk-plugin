@@ -3,7 +3,7 @@ import http from "http"
 import { config } from "aws-sdk"
 import { createCommand } from "commander"
 import stringArgv from 'string-argv';
-import { Option } from "@slack/web-api";
+import { Option, ActionsBlock } from "@slack/web-api";
 
 import { Slack, PluginInfo, Plugin, blockFactory } from "@frenzy/index"
 
@@ -39,6 +39,15 @@ function getS3Info(type: "hash" | "wordlist" | "rule") {
             }
     }
 }
+async function listFiles(type: "hash" | "wordlist" | "rule"): Promise<Array<string>> {
+    try {
+        let { bucket, keyPrefix, region } = getS3Info(type)
+        return await npkS3.listBucketFiles(bucket, keyPrefix, region)
+    } catch (error) {
+        console.error(`Error getting ${type} files: `, error)
+        return []
+    }
+}
 
 async function uploadHashFile(name: string, data: any) {
     let { bucket, keyPrefix, region } = getS3Info("hash")
@@ -49,7 +58,7 @@ async function uploadHashFile(name: string, data: any) {
 
 function setupSlack(){
     // Setup Static Options
-    slack.addOptions("hashTypes", Object.keys(npkPricing.hashTypes).map(name => slack.createOption(name, npkPricing.hashTypes[name])))
+    slack.storeOptions("hashTypes", Object.keys(npkPricing.hashTypes).map(name => blockFactory.option(name, npkPricing.hashTypes[name])))
 
     // Setup dot commands
     slack.dotCommand("npk", async (event) => {
@@ -57,17 +66,13 @@ function setupSlack(){
             // Upload hash file
             if ((event.subtype && event.subtype == "file_share") || event.files) {
                 event.files.forEach(async (file: any) => {
-                    let params = {
-                        method: 'GET',
-                        url: file.url_private,
-                        headers: {
-                            "Authorization": `Bearer ${slack.client.token}`
-                        }
-                    }
-                    let contents = await request(params)
-                    let result = await uploadHashFile(file.name, contents)
-                    console.log("Hash upload result")
-                    console.log(result)
+                    let contents = await slack.getFile(file.url_private)
+                    await uploadHashFile(file.name, contents)
+                    await slack.postMessage({
+                        channel: event.channel,
+                        text: `<@${event.user}> \`${file.name}\` uploaded`,
+                        icon_emoji: ":thumbsup:"
+                    })
                 });
                 return
             }
@@ -80,16 +85,11 @@ function setupSlack(){
                     {
                         type: "actions",
                         elements: [
-                            {
-                                type: "button",
-                                action_id: "openCampaignModal",
-                                style: "primary",
-                                text: {
-                                    type: "plain_text",
-                                    text: "Create Campaign",
-                                    emoji: true
-                                }
-                            }
+                            blockFactory.button({
+                                actionId: "openCampaignModal",
+                                text: "Create Campaign",
+                                style: "primary"
+                            })
                         ]
                     }
                 ]
@@ -99,13 +99,31 @@ function setupSlack(){
         }
     })
     
+    /*
+    {
+        "region": 0,
+        "availabilityZone": 0,
+        "hashFile": 0,
+        "hashType": 0,
+        "instanceType": 0,
+        "instanceCount": 0,
+        "instanceDuration": 0,
+        "priceTarget": 0
+    }
+    */
     // Open Campaign Modal
     slack.interactions.action({actionId: "openCampaignModal"}, (payload, respond) => {
         slack.openModal({
+            trigger_id: payload.trigger_id,
             modal: {
                 callback_id: "campaign",
                 submit: {
                     text: "Create",
+                    type: "plain_text",
+                    emoji: true
+                },
+                close: {
+                    text: "Close",
                     type: "plain_text",
                     emoji: true
                 },
@@ -115,101 +133,95 @@ function setupSlack(){
                     emoji: true
                 },
                 blocks: [
+                    blockFactory.externalSelect({
+                        blockId: "hashTypes",
+                        label: "Choose a hash type",
+                        placeholder: "Hash Type"
+                    }),
+                    blockFactory.divider(),
+                    blockFactory.section({
+                        text: "Force Region"
+                    }),
                     {
-                        block_id: "hashTypes",
-                        type: "input",
-                        label: {
-                            type: "plain_text",
-                            text: "Choose hash type",
-                            emoji: true
-                        },
-                        element: {
-                            type: "external_select",
-                            action_id: "selection",
-                            min_query_length: 1,
-                            placeholder: {
-                                text: "Type",
-                                type: "plain_text",
-                                emoji: true
-                            }
-                        }
+                        type: "actions",
+                        block_id: "forceRegion",
+                        elements: [
+                            blockFactory.button({
+                                text: "west-1",
+                                value: "us-west-1"
+                            }),
+                            blockFactory.button({
+                                text: "west-2",
+                                value: "us-west-2"
+                            }),
+                            blockFactory.button({
+                                text: "east-1",
+                                value: "us-east-1"
+                            }),
+                            blockFactory.button({
+                                text: "east-2",
+                                value: "us-east-2"
+                            })
+                        ]
                     },
-                    {
-                        block_id: "hashFile",
-                        type: "input",
-                        label: {
-                            type: "plain_text",
-                            text: "Choose hash file",
-                            emoji: true
-                        },
-                        element: {
-                            type: "external_select",
-                            action_id: "selection",
-                            min_query_length: 1,
-                            placeholder: {
-                                text: "File",
-                                type: "plain_text",
-                                emoji: true
-                            }
-                        }
-                    },
-                    {
-                        block_id: "wordlist",
-                        type: "input",
-                        label: {
-                            type: "plain_text",
-                            text: "Choose wordlist",
-                            emoji: true
-                        },
-                        element: {
-                            type: "external_select",
-                            action_id: "selection",
-                            min_query_length: 1,
-                            placeholder: {
-                                text: "Wordlist",
-                                type: "plain_text",
-                                emoji: true
-                            }
-                        }
-                    },
-                    {
-                        block_id: "rules",
-                        type: "input",
-                        label: {
-                            type: "plain_text",
-                            text: "Choose rules",
-                            emoji: true
-                        },
-                        element: {
-                            type: "multi_external_select",
-                            action_id: "selection",
-                            min_query_length: 1,
-                            placeholder: {
-                                text: "Rules",
-                                type: "plain_text",
-                                emoji: true
-                            }
-                        }
-                    }
+                    blockFactory.divider(),
+                    blockFactory.externalSelect({
+                        blockId: "hashFile",
+                        label: "Choose a hash file",
+                        placeholder: "Hash File"
+                    }),
+                    blockFactory.externalSelect({
+                        blockId: "wordlist",
+                        label: "Choose a wordlist",
+                        placeholder: "Wordlist"
+                    }),
+                    blockFactory.externalSelect({
+                        blockId: "rules",
+                        label: "Choose rules",
+                        placeholder: "Rules",
+                        multi: true
+                    }),
+                    blockFactory.divider(),
+
+                    blockFactory.externalSelect({
+                        blockId: "instanceTypes",
+                        label: "Choose instance type",
+                        placeholder: "Instance Type"
+                    })
                 ],
-            },
-            trigger_id: payload.trigger_id
+            }
         })
     })
+    slack.interactions.action({
+        blockId: "forceRegion"
+    }, async (payload, respond) => {
+        console.log(payload)
+        let region = payload.actions.firstOrDefault().value
+        let forceRegionBlock: ActionsBlock = payload.view.blocks.filter(b => b.block_id == "forceRegion")[0]
+        forceRegionBlock.elements.forEach((e: any) => {
+            if (e.value == region && !e.style) {
+                e.style = "primary"
+            } else if (e.style) {
+                delete e.style
+            }
+        })
+        await slack.updateModal(payload.view)
+    })
 
+    // Hash Types Options
     slack.interactions.options({
         within: "block_actions",
         blockId: "hashTypes",
         actionId: "selection"
     }, (payload) => {
-        let search: string = payload.value.toLowerCase()
         let options = slack.getOptions("hashTypes")
-        let startsWith = options.filter(o => o.text.text.toLowerCase().startsWith(search))
+        let startsWith = options.filter(o => o.text.text.iStartsWith(payload.value)) // all hash files that start with the search string
         let includes = options.filter(o => {
-            return o.text.text.toLowerCase().includes(search) &&
+            return o.text.text.iIncludes(payload.value) &&
             !startsWith.includes(o)
-        })
+        }) // all hash files that include the search string and are not in the startsWith array
 
+        // The number of slack options can't exceed 100
         if (startsWith.length + includes.length > 100) {
             options = startsWith
         } else {
@@ -222,191 +234,71 @@ function setupSlack(){
             options: options
         }
     })
+
+    // Hash Files Options
     slack.interactions.options({
         within: "block_actions",
         blockId: "hashFile",
         actionId: "selection"
     }, async (payload) => {
-        let options: Array<Option>
-        try {
-            let s3 = getS3Info("hash")
-            let hashes = await npkS3.listBucketFiles(s3.bucket, s3.keyPrefix, s3.region)
-            options = hashes.map((file) => slack.createOption(file, file))
-        } catch (error) {
-            console.error(error)
-            options = []
-        }
-        options.splice(0, 0, slack.createOption(" ", " "))
+        let files = await listFiles("hash")
         return {
-            options: [
-                ...options
-            ]
+            options: files.map((file) => blockFactory.option(file, file))
         }
     })
+
+    // Wordlists Options
     slack.interactions.options({
         within: "block_actions",
         blockId: "wordlist",
         actionId: "selection"
     }, async (payload) => {
-        let options: Array<Option>
-        try {
-            let s3 = getS3Info("wordlist")
-            let wordlists = await npkS3.listBucketFiles(s3.bucket, s3.keyPrefix, s3.region)
-            options = wordlists.map((file) => slack.createOption(file, file))
-        } catch (error) {
-            console.error(error)
-            options = []
-        }
+        let files = await listFiles("wordlist")
 
         return {
-            options: [
-                ...options
-            ]
+            options: files.map((file) => blockFactory.option(file, file))
         }
     })
+
+    // Rules Options
     slack.interactions.options({
         within: "block_actions",
         blockId: "rules",
         actionId: "selection"
     }, async (payload) => {
-        let options: Array<Option>
-        try {
-            let s3 = getS3Info("rule")
-            let rules = await npkS3.listBucketFiles(s3.bucket, s3.keyPrefix, s3.region)
-            options = rules.map((file) => slack.createOption(file, file))
-        } catch (error) {
-            console.error(error)
-            options = []
-        }
+        let files = await listFiles("rule")
 
         return {
+            options: files.map((file) => blockFactory.option(file, file))
+        }
+    })
+    
+    // Instance Types
+    slack.interactions.options({
+        within: "block_actions",
+        blockId: "instanceTypes",
+        actionId: "selection"
+    }, async (payload) => {
+        let instances = await npkPricing.getInstancePrices()
+        return {
             options: [
-                ...options
+                blockFactory.option("G3", JSON.stringify(instances.idealG3Instance)),
+                blockFactory.option("P2", JSON.stringify(instances.idealP2Instance)),
+                blockFactory.option("P3", JSON.stringify(instances.idealP3Instance))
             ]
         }
     })
+
+    // Campaign Modal Submission
     slack.interactions.viewSubmission({callbackId: "campaign"}, (payload) => {
         console.log("Values")
         console.log(payload.view.state.values)
     })
-
-    // slack.interactions.options({
-    //     within: "block_actions",
-    //     blockId: "instances"
-    // }, async (payload) => {
-    //     console.log(payload)
-    //     let instancePrices = await npkPricing.getInstancePrices()
-    //     return {
-    //         options: [{
-    //                 text: {
-    //                     type: 'plain_text',
-    //                     text: "G3",
-    //                 },
-    //                 value: instancePrices.idealG3Instance.instanceType,
-    //             },
-    //             {
-    //                 text: {
-    //                     type: 'plain_text',
-    //                     text: "P2",
-    //                 },
-    //                 value: instancePrices.idealP2Instance.instanceType,
-    //             },
-    //             {
-    //                 text: {
-    //                     type: 'plain_text',
-    //                     text: "P3",
-    //                 },
-    //                 value: instancePrices.idealP3Instance.instanceType,
-    //             },
-    //         ]
-    //     }
-    // })
-    // let campaignsParser = createCommand()
-    // campaignsParser.option('-c, --cheese <type>');
-    // slack.dotCommand({ command: "campaigns", parser: campaignsParser }, async (event) => {
-    //     console.log("dotCommand: ", event)
-    //     try {
-    //         switch (event.dotCommandPayload) {
-    //             case "get":
-    //                 break;
-    //             case "getAll":
-    //                 let campaigns = await npkCampaign.getAll()
-    //                 slack.client.chat.postMessage({
-    //                     channel: event.channel,
-    //                     text: markdown.codeBlock(campaigns),
-    //                     mrkdwn: true
-    //                 })
-    //                 break;
-    //             case "create":
-    //                 break;
-    //             case "start":
-    //                 break;
-    //             case "cancel":
-    //                 break;
-    //             case "status":
-    //                 break;
-    //         }
-    //     } catch (error) {
-    //         slack.postError(event.channel, error)
-    //     }
-    // })
-    // slack.dotCommand("hashes", async (event) => {
-    //     try {
-    //         let s3 = getS3Info("hash")
-    //         switch (event.dotCommandPayload) {
-    //             case "get":
-    //                 break;
-    //             case "getAll":
-    //                 let hashes = await npkS3.listBucketFiles(s3.bucket, s3.keyPrefix, s3.region)
-    //                 slack.client.chat.postMessage({
-    //                     channel: event.channel,
-    //                     text: markdown.codeBlock(hashes),
-    //                     mrkdwn: true
-    //                 })
-    //                 break;
-    //             case "create":
-    //                 break;
-    //             case "start":
-    //                 break;
-    //             case "cancel":
-    //                 break;
-    //             case "status":
-    //                 break;
-    //         }
-    //     } catch (error) {
-    //         slack.postError(event.channel, error)
-    //     }
-    // })
-    // slack.dotCommand("wordlists", async (event) => {
-    //     try {
-    //         let s3 = getS3Info("wordlist")
-    //         let wordlists = await npkS3.listBucketFiles(s3.bucket, s3.keyPrefix, s3.region)
-    //         slack.postMessage({
-    //             channel: event.channel,
-    //             text: markdown.codeBlock(wordlists),
-    //             mrkdwn: true
-    //         })
-    //     } catch (error) {
-    //         slack.postError(event.channel, error)
-    //     }
-    // })
-    // slack.dotCommand("rules", async (event) => {
-    //     try {
-    //         let s3 = getS3Info("rule")
-    //         let rules = await npkS3.listBucketFiles(s3.bucket, s3.keyPrefix, s3.region)
-    //         slack.postMessage({
-    //             channel: event.channel,
-    //             text: markdown.codeBlock(rules),
-    //             mrkdwn: true
-    //         })
-    //     } catch (error) {
-    //         slack.postError(event.channel, error)
-    //     }
-    // })
 }
 
 async function initialize() {
     await npkCognito.init()
+    let isLoggedIn = npkCognito.isLoggedOn()
 
     npkCampaign.init()
     npkS3.init()
@@ -431,173 +323,18 @@ async function initialize() {
 //     next()
 // })
 
-// function respondJson(response, statusCode, body, success){
-//     response.status(statusCode)
-//     switch (typeof body) {
-//         case "string":
-//             body = { msg: body, success: success };
-//         break;
+// apiRequirements.campaigns.create
+// await npkCampaign.create(req.body)
+// await npkCampaign.start(req.params.campaignId)
 
-//         case "object":
-//             body.success = success;
-//         break;
-//     }
-//     response.json(body)
-// }
-// function respondRaw(response, statusCode, body){
-//     response.status(statusCode).send(body)
-// }
+// await npkCampaign.get(req.params.campaignId)
+// await npkCampaign.cancel(req.params.campaignId)
 
-// http.ServerResponse.prototype.success = function success(body, statusCode = 200){
-//     respondJson(this, statusCode, body, true)
-// }
-// http.ServerResponse.prototype.file = function file(body){
-//     respondRaw(this, 200, body)
-// }
-// http.ServerResponse.prototype.failure = function failure(body, statusCode = 400){
-//     respondJson(this, statusCode, body, false)
-// }
-// http.ServerResponse.prototype.unauthenticated = function unauthenticated(){
-//     this.failure("Not logged in", 403)
-// }
-// http.ServerResponse.prototype.schemaFailure = function schemaFailure(schema) {
-//     this.failure({msg: "Missing required schema properties", schema: schema})
-// }
+// await npkCampaign.status(req.params.campaignId)
 
-// // Campaigns
-// authRouter.route("/campaigns")
-//     .get(async (req, res) => {
-//         try {
-//             let result = await npkCampaign.getAll()
-//             res.success(result)
-//         } catch (error) {
-//             res.failure(error)
-//         }
-//     })
-//     .post(required(apiRequirements.campaigns.create), async (req, res) => {
-//         try {
-//             let result = await npkCampaign.create(req.body)
-//             res.success(result)
-//         } catch (error) {
-//             res.failure(error)
-//         }
-//     })
-// authRouter.route("/campaigns/:campaignId")
-//     .get(async (req, res) => {
-//         try {
-//             let result = await npkCampaign.get(req.params.campaignId)
-//             res.success(result)
-//         } catch (error) {
-//             res.failure(error)
-//         }
-//     })
-//     .delete(async (req, res) => {
-//         try {
-//             let result = await npkCampaign.cancel(req.params.campaignId)
-//             res.success(result)
-//         } catch (error) {
-//             res.failure(error)
-//         }
-//     })
-
-// // Start campaign
-// authRouter.post("/campaigns/:campaignId/start", async (req, res) => {
-//     try {
-//         let result = await npkCampaign.start(req.params.campaignId)
-//         res.success(result)
-//     } catch (error) {
-//         res.failure(error)
-//     }
-// })
-
-// // Get campaign status
-// authRouter.get("/campaigns/:campaignId/status", async (req, res) => {
-//     try {
-//         let result = await npkCampaign.status(req.params.campaignId)
-//         res.success(result)
-//     } catch (error) {
-//         res.failure(error)
-//     }
-// })
-
-// // Rules
-// authRouter.get("/rules", s3Info("rule"), async (req, res) => {
-//     try {
-//         let rules = await npkS3.listBucketFiles(req.s3.bucket, req.s3.keyPrefix, req.s3.region)
-//         res.success({rules: rules})
-//     } catch (error) {
-//         res.failure(error)
-//     }
-// })
-
-// // Wordlists
-// authRouter.get("/wordlists", s3Info("wordlist"), async (req, res) => {
-//     try {
-//         let wordlists = await npkS3.listBucketFiles(req.s3.bucket, req.s3.keyPrefix, req.s3.region)
-//         res.success({wordlists: wordlists})
-//     } catch (error) {
-//         res.failure(error)
-//     }
-// })
-
-// // Hashes
-// authRouter.use("/hashes", s3Info("hash"))
-// authRouter.route("/hashes")
-//     .get(async (req, res) => {
-//         try {
-//             let hashes = await npkS3.listBucketFiles(req.s3.bucket, req.s3.keyPrefix)
-//             res.success({hashes: hashes})
-//         } catch (error) {
-//             res.failure(error)
-//         }
-//     })
-//     .post(upload.single("file"), modify("file.originalname", basename), async (req, res) => {
-//         try {
-//             let result = await npkS3.putObject(req.s3.bucket, `${req.s3.keyPrefix}/${req.file.originalname}`, info.file.buffer.toString())
-//             res.success(result)
-//         } catch (error) {
-//             res.failure(error)    
-//         }
-//     })
-// authRouter.use("/hashes/:file", modify("params.file", basename))
-// authRouter.route("/hashes/:file")
-//     .get(async (req, res) => {
-//         try {
-//             let result = await npkS3.getObject(req.s3.bucket, `${req.s3.keyPrefix}/${req.params.file}`)
-//             res.file(result.Body.toString())
-//         } catch (error) {
-//             res.failure(res, error)
-//         }
-//     })
-//     .delete(async (req, res) => {
-//         try {
-//             let result = await npkS3.deleteObject(req.s3.bucket, `${req.s3.keyPrefix}/${req.params.file}`)
-//             res.success(result)
-//         } catch (error) {
-//             res.failure(error)
-//         }
-//     })
-
-// app.use('/slack/actions', slackInteractions.requestListener());
-// app.use('/slack/events', slackEvents.requestListener());
-// app.use(authRouter)
-
-// app.listen(port, async () => {
-//     try {
-//         await cognito.init()
-
-//         npkCampaign.init()
-//         npkS3.init()
-//         npkPricing.init()
-
-//         npkPricing.getInstancePrices().then(data => console.log(data))
-//     } catch (error) {
-//         console.log(error)
-//         process.exit(1)
-//     }
-
-//     console.log(`App listening at http://localhost:${port}`)
-// })
+// await npkS3.getObject(req.s3.bucket, `${req.s3.keyPrefix}/${req.params.file}`)
+// result.Body.toString()
+// await npkS3.deleteObject(req.s3.bucket, `${req.s3.keyPrefix}/${req.params.file}`)
 
 const plugin: Plugin = async (s) => {
     slack = s
