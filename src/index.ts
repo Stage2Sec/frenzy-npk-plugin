@@ -5,8 +5,7 @@ import { createCommand } from "commander"
 import stringArgv from 'string-argv';
 import { Option } from "@slack/web-api";
 
-import { Slack, PluginInfo, Plugin } from "@frenzy/util"
-import * as markdown from "@frenzy/markdown"
+import { Slack, PluginInfo, Plugin, blockFactory } from "@frenzy/index"
 
 import { npkCognito } from "./lib/npk-cognito"
 import { npkPricing } from "./lib/npk-pricing"
