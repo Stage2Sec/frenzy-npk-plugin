@@ -3,7 +3,7 @@ import http from "http"
 import { config } from "aws-sdk"
 import { createCommand } from "commander"
 import stringArgv from 'string-argv';
-import { Option, ActionsBlock, View, KnownBlock, Button, SectionBlock, PlainTextElement, HeaderBlock, InputBlock, StaticSelect } from "@slack/web-api";
+import { View, Button, SectionBlock, PlainTextElement, HeaderBlock } from "@slack/web-api";
 
 import { Slack, PluginInfo, Plugin, blockFactory, isFalsy } from "@frenzy/index"
 
@@ -216,24 +216,19 @@ function setupSlack(){
     slack.interactions.action({
         actionId: "openCampaignModal"
     }, (payload, respond) => {
-        let metadata = { 
-            instanceCount: 2,
-            instanceDuration: 4
-        }
-        slack.openModal({
+        slack.modals.open({
             trigger_id: payload.trigger_id,
             modal: {             
                 callback_id: "campaign",
-                submit: blockFactory.plainText("Create"),
-                close: blockFactory.plainText("Close"),
-                title: blockFactory.plainText("Create Campaign"),
+                submit: "Create",
+                close: "Close",
+                title: "Create Campaign",
                 blocks: [
                     blockFactory.section({
-                        text: "Loading...",
-                        blockId: "loading"
+                        blockId: "loading",
+                        text: "Loading..."
                     })
-                ],
-                private_metadata: JSON.stringify(metadata)
+                ]
             }
         })
         .then(result => {
@@ -243,11 +238,14 @@ function setupSlack(){
             if (!result?.ok) {
                 return
             }
-            slack.updateModal((result as any).view, async (view, metadata) => {
+            slack.modals.update((result as any).view, async (view, metadata) => {
                 let prices = await npkPricing.getInstancePrices(metadata.forceRegion)
                 metadata.idealG3Instance = prices.idealG3Instance
                 metadata.idealP2Instance = prices.idealP2Instance
                 metadata.idealP3Instance = prices.idealP3Instance
+
+                metadata.instanceCount = 2
+                metadata.instanceDuration = 4
 
                 let hashFiles = await listFiles("hash")
 
@@ -342,7 +340,7 @@ function setupSlack(){
         blockId: "forceRegion"
     }, (payload, respond) => {
         console.log(payload)
-        slack.updateModal(payload.view, async (view, metadata) => {
+        slack.modals.update(payload.view, async (view, metadata) => {
             metadata.forceRegion = payload.actions.first().selected_option?.value
             if (isFalsy(metadata.forceRegion)) {
                 delete metadata.forceRegion
@@ -365,7 +363,7 @@ function setupSlack(){
         actionId: "selectInstance"
     }, (payload, respond) => {
         console.log(payload)
-        slack.updateModal(payload.view, async (view, metadata) => {
+        slack.modals.update(payload.view, async (view, metadata) => {
             let instanceType = payload.actions.first().value
             if (isFalsy(metadata.selectedInstance) || metadata.selectedInstance != instanceType) {
                 metadata.selectedInstance = instanceType
@@ -380,7 +378,7 @@ function setupSlack(){
         actionId: "selection"
     }, (payload, respond) => {
         console.log(payload)
-        slack.updateModal(payload.view, async (view, metadata) => {
+        slack.modals.update(payload.view, async (view, metadata) => {
             metadata.hashType = payload.actions.first().selected_option?.value
             if (isFalsy(metadata.hashType)) {
                 delete metadata.hashType
@@ -393,7 +391,7 @@ function setupSlack(){
     slack.interactions.action({
         blockId: "wordlistAttackToggle"
     }, (payload, respond) => {
-        slack.updateModal(payload.view, async (view, metadata) => {
+        slack.modals.update(payload.view, async (view, metadata) => {
             metadata.wordlistEnabled = payload.actions.first().value == "true"
             let section = view.blocks.findAs<SectionBlock>(b => b.block_id == "wordlistAttackToggle")
             let button = section.accessory as Button
@@ -439,7 +437,7 @@ function setupSlack(){
     slack.interactions.action({
         blockId: "maskConfigToggle"
     }, (payload, respond) => {
-        slack.updateModal(payload.view, (view, metadata) => {
+        slack.modals.update(payload.view, (view, metadata) => {
             metadata.maskEnabled = payload.actions.first().value == "true"
             let section = view.blocks.findAs<SectionBlock>(b => b.block_id == "maskConfigToggle")
             let button = section.accessory as Button
@@ -472,7 +470,7 @@ function setupSlack(){
         blockId: "instanceCount",
         actionId: "selection"
     }, (payload, respond) => {
-        slack.updateModal(payload.view, (view, metadata) => {
+        slack.modals.update(payload.view, (view, metadata) => {
             metadata.instanceCount = parseInt(payload.actions.first().selected_option?.value)
             updateTotalPrice(view, metadata)
         })
@@ -483,7 +481,7 @@ function setupSlack(){
         blockId: "instanceDuration",
         actionId: "selection"
     }, (payload, respond) => {
-        slack.updateModal(payload.view, (view, metadata) => {
+        slack.modals.update(payload.view, (view, metadata) => {
             metadata.instanceDuration = parseInt(payload.actions.first().selected_option?.value)
             updateTotalPrice(view, metadata)
         })
@@ -522,11 +520,11 @@ function setupSlack(){
     }, (payload) => {
         let results = validate(payload.view)
         if (results.errors) {
-            return slack.pushModal({
+            return slack.modals.push({
                 pushMethod: "responseAction",
                 modal: {
-                    title: blockFactory.plainText("Errors"),
-                    close: blockFactory.plainText("OK"),
+                    title: "Errors",
+                    close: "OK",
                     blocks: results.errors.map(e => blockFactory.section({
                         text: e
                     }))
@@ -540,7 +538,7 @@ function validate(view: View): {
     errors?: Array<any>,
     data?: any
 } {
-    let metadata = slack.getMetadata(view)
+    let metadata = slack.modals.getMetadata(view)
 
     let errors: Array<any> = []
     let hashType = metadata.hashType
