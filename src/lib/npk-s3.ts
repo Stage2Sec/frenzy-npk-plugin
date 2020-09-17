@@ -66,7 +66,7 @@ export class NpkS3 {
         if (result.Contents) {
             for (const content of result.Contents) {
                 let key = content.Key || ""
-                files.push(basename(key).split('.').slice(0, -1).join('.'))
+                files.push(basename(key))
             }
         }
         

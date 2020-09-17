@@ -3,7 +3,7 @@ import { Pricing, EC2 } from "aws-sdk"
 import { isFalsy } from "@frenzy/index"
 
 export class NpkPricing {
-    private spotPrice: any = {}
+    public spotPrice: any = {}
     private spotPriceHistory = {
         "us-west-1": {},
         "us-west-2": {},
@@ -303,7 +303,7 @@ export class NpkPricing {
         }
     }
 
-    public async calcHashPricing(hashType: string, forceRegion?: string): Promise<any> {
+    public async getHashPricing(hashType: string, forceRegion?: string): Promise<any> {
         let instances = {}
         let empty = {
             hashes: "-",
@@ -317,7 +317,7 @@ export class NpkPricing {
                 instances[e] = empty;
             }
     
-            let price = 10;
+            let price = instancePrices[`ideal${e.toUpperCase()}Instance`].price;
             if (typeof this[e] == "undefined" || typeof this[e][hashType] == "undefined") {
     
                 instances[e] = {
@@ -331,14 +331,9 @@ export class NpkPricing {
     
             instances[e] = {
                 hashes: this[e][hashType].speed,
-                price: instancePrices[`ideal${e.toUpperCase()}Instance`].price,
+                price: price,
                 hashPrice: this[e][hashType].speed / instancePrices[`ideal${e.toUpperCase()}Instance`].price
             };
-    
-            // if (metadata.bestPrice == null || metadata.instances[e].hashprice > metadata.bestPrice) {
-            //     metadata.idealInstance = e;
-            //     metadata.bestPrice = metadata.instances[e].hashprice;
-            // }
         });
         return instances
     }
