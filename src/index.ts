@@ -229,6 +229,30 @@ function setupSlack(){
                 title: blockFactory.plainText("Create Campaign"),
                 blocks: [
                     blockFactory.section({
+                        text: "Loading...",
+                        blockId: "loading"
+                    })
+                ],
+                private_metadata: JSON.stringify(metadata)
+            }
+        })
+        .then(result => {
+            // Since it seems payload.trigger_id will timeout if a modal is opened
+            // asynchronously, we will just update the modal with the rest of the blocks
+            // here
+            if (!result?.ok) {
+                return
+            }
+            slack.updateModal((result as any).view, async (view, metadata) => {
+                let prices = await npkPricing.getInstancePrices(metadata.forceRegion)
+                metadata.idealG3Instance = prices.idealG3Instance
+                metadata.idealP2Instance = prices.idealP2Instance
+                metadata.idealP3Instance = prices.idealP3Instance
+
+                let hashFiles = await listFiles("hash")
+
+                view.blocks = [
+                    blockFactory.section({
                         blockId: "hashTypes",
                         text: "Hash Type",
                         accessory: blockFactory.externalSelect({
@@ -256,12 +280,10 @@ function setupSlack(){
                         text: "Target List"
                     }),
                     blockFactory.input({
-                        blockId: "tempHashFile",
+                        blockId: "hashFile",
                         label: "Hashes File",
                         element: blockFactory.staticSelect({
-                            options: [
-                                blockFactory.option("empty", "empty")
-                            ]
+                            options: hashFiles.map(file => blockFactory.option(file, file))
                         })
                     }),
                     blockFactory.divider(),
@@ -310,36 +332,7 @@ function setupSlack(){
                         text: "Total: $?.??",
                         blockId: "totalPrice"
                     })
-                ],
-                private_metadata: JSON.stringify(metadata)
-            }
-        })
-        .then(result => {
-            // Since it seems payload.trigger_id will timeout if a modal is opened
-            // asynchronously, we can update the modal here with any
-            // actions that need to be done asynchronously
-            if (!result?.ok) {
-                return
-            }
-            slack.updateModal((result as any).view, async (view, metadata) => {
-                let prices = await npkPricing.getInstancePrices(metadata.forceRegion)
-                metadata.idealG3Instance = prices.idealG3Instance
-                metadata.idealP2Instance = prices.idealP2Instance
-                metadata.idealP3Instance = prices.idealP3Instance
-
-                let temp = view.blocks.find(b => b.block_id == "tempHashFile")
-                if (!temp){
-                    return
-                }
-                
-                let files = await listFiles("hash")
-                view.blocks.splice(view.blocks.indexOf(temp), 1, blockFactory.input({
-                    blockId: "hashFile",
-                    label: "Hashes File",
-                    element: blockFactory.staticSelect({
-                        options: files.map(file => blockFactory.option(file, file))
-                    })
-                }))
+                ]
             })
         })
     })
@@ -610,32 +603,6 @@ function validate(view: View): {
         data
     }
 }
-
-    /*
-    {
-        "region": "us-west-2",
-        "availabilityZone": "us-west-2c",
-        "instanceType": "p2.xlarge",
-        "hashFile": "uploads/md5sums",
-        "instanceCount": "3",
-        "instanceDuration": "9",
-        "priceTarget": 198.288,
-        "mask": "?a?a?d",
-        "dictionaryFile": "wordlist/rockyou.7z",
-        "rulesFiles": [
-            "rules/d3ad0ne.rule.7z"
-        ],
-    {
-        "region": 0,
-        "availabilityZone": 0,
-        "hashFile": 0,
-        "hashType": 0,
-        "instanceType": 0,
-        "instanceCount": 0,
-        "instanceDuration": 0,
-        "priceTarget": 0
-    }
-    */
 
 async function initialize() {
     await npkCognito.init()
