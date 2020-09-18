@@ -96,10 +96,10 @@ export class NpkCampaign {
         }
 
         return {
-            active: campaign.active,
-            status: campaign.status,
-            startTime: campaign.startTime,
-            estimatedEndTime: campaign.estimatedEndTime,
+            active: campaign.active as boolean,
+            status: campaign.status as string,
+            startTime: campaign.startTime as number,
+            estimatedEndTime: campaign.estimatedEndTime as number,
             hashRate: campaign.hashRate,
             progress: campaign.progress,
             recoveredHashes: campaign.recoveredHashes,
