@@ -3,7 +3,7 @@ import http from "http"
 import { config } from "aws-sdk"
 import { createCommand } from "commander"
 import stringArgv from 'string-argv';
-import { View, Button, SectionBlock, PlainTextElement, HeaderBlock, KnownBlock } from "@slack/web-api";
+import { View, Button, SectionBlock, PlainTextElement, HeaderBlock, KnownBlock, ExternalSelect, StaticSelect } from "@slack/web-api";
 
 import { Slack, PluginInfo, Plugin, blockFactory, isFalsy, ActionBlockElement } from "@frenzy/index"
 
@@ -14,10 +14,11 @@ import { npkCampaign } from "./lib/npk-campaign"
 import { request } from "./lib/http-utils"
 import { settings } from "@npk/settings"
 import { setTimeout } from "timers";
+import { EventEmitter } from "events";
 
 let slack: Slack
 
-const heartbeatInterval = 300000
+const heartbeatInterval = 30000 // 30 seconds
 const helpText: string = 
 `- *Create and start a campaign.* Click the \`Create Campaign\` button and fill out the necessary fields
 - *Upload a hash file to crack.* Send the \`.npk\` message with the file attached`
@@ -235,6 +236,14 @@ function setupSlack(){
 
         // Setup Static Options
         slack.storeOptions("hashTypes", Object.keys(npkPricing.hashTypes).map(name => blockFactory.option(name, npkPricing.hashTypes[name])))
+        slack.storeOptions("forceRegion", [
+            blockFactory.option("Any", null),
+            blockFactory.option("West-1", "us-west-1"),
+            blockFactory.option("West-2", "us-west-2"),
+            blockFactory.option("East-1", "us-east-1"),
+        ])
+        slack.storeOptions("instanceCount", [].range(6, 1).map(n => blockFactory.option(`${n}`, n)))
+        slack.storeOptions("instanceDuration", [].range(24, 1).map(n => blockFactory.option(`${n} hour(s)`, n)))
 
         // Open Campaign Modal
         slack.interactions.action({
@@ -242,7 +251,7 @@ function setupSlack(){
         }, (payload, respond) => {
             slack.modals.open({
                 trigger_id: payload.trigger_id,
-                modal: {             
+                modal: {    
                     callback_id: "campaign",                
                     close: "Close",
                     title: "Create Campaign",
@@ -292,12 +301,7 @@ function setupSlack(){
                             text: "Force Region",
                             blockId: "forceRegion",
                             accessory: blockFactory.staticSelect({
-                                options: [
-                                    blockFactory.option("Any", null),
-                                    blockFactory.option("West-1", "us-west-1"),
-                                    blockFactory.option("West-2", "us-west-2"),
-                                    blockFactory.option("East-1", "us-east-1"),
-                                ],
+                                options: slack.getOptions("forceRegion"),
                                 initialOption: blockFactory.option("Any", null)
                             })
                         }),
@@ -311,7 +315,9 @@ function setupSlack(){
                             blockId: "hashFile",
                             label: "Hashes File",
                             element: blockFactory.staticSelect({
-                                options: hashFiles.map(file => blockFactory.option(file, file))
+                                options: hashFiles.length > 0 ? 
+                                hashFiles.map(file => blockFactory.option(file, file)) :
+                                [blockFactory.option("No files found", null)]
                             })
                         }),
                         blockFactory.divider(),
@@ -343,16 +349,16 @@ function setupSlack(){
                             blockId: "instanceCount",
                             text: "Instance Count",
                             accessory: blockFactory.staticSelect({
-                                options: [].range(6, 1).map(n => blockFactory.option(`${n}`, n)),
-                                initialOption: blockFactory.option(`${metadata.instanceCount}`, metadata.instanceCount)
+                                options: slack.getOptions("instanceCount"),
+                                initialOption: slack.getOptions("instanceCount").find(o => o.value == `${metadata.instanceCount}`)
                             })
                         }),
                         blockFactory.section({
                             blockId: "instanceDuration",
                             text: "Duration",
                             accessory: blockFactory.staticSelect({
-                                options: [].range(24, 1).map(n => blockFactory.option(`${n} hour(s)`, n)),
-                                initialOption: blockFactory.option(`${metadata.instanceDuration} hour(s)`, metadata.instanceDuration)
+                                options: slack.getOptions("instanceDuration"),
+                                initialOption: slack.getOptions("instanceDuration").find(o => o.value == `${metadata.instanceDuration}`)
                             })
                         }),
                         blockFactory.divider(),
@@ -369,7 +375,6 @@ function setupSlack(){
         slack.interactions.action({
             blockId: "forceRegion"
         }, (payload, respond) => {
-            console.log(payload)
             slack.modals.update(payload.view, async (view, metadata) => {
                 metadata.forceRegion = payload.actions.first().selected_option?.value
                 if (isFalsy(metadata.forceRegion)) {
@@ -392,7 +397,6 @@ function setupSlack(){
         slack.interactions.action({
             actionId: "selectInstance"
         }, (payload, respond) => {
-            console.log(payload)
             slack.modals.update(payload.view, async (view, metadata) => {
                 let instanceType = payload.actions.first().value
                 if (isFalsy(metadata.selectedInstance) || metadata.selectedInstance != instanceType) {
@@ -407,7 +411,6 @@ function setupSlack(){
             blockId: "hashTypes",
             actionId: "selection"
         }, (payload, respond) => {
-            console.log(payload)
             slack.modals.update(payload.view, async (view, metadata) => {
                 metadata.hashType = payload.actions.first().selected_option?.value
                 if (isFalsy(metadata.hashType)) {
@@ -551,9 +554,28 @@ function setupSlack(){
             let metadata = slack.modals.getMetadata(payload.view)
             let results = validate(payload.view, metadata)
             if (results.errors) {
+                // Since state isn't save for action blocks and we have some fields
+                // that are action blocks and not input blocks, we must manually save their state
+                // before showing the error modal
+                slack.modals.update(payload.view, (view) => {
+                    ["hashTypes", "forceRegion", "instanceCount", "instanceDuration"]
+                    .forEach(blockId => {
+                        let select = view.blocks.findAs<SectionBlock>(b => b.block_id == blockId).accessory as StaticSelect
+
+                        let value = metadata[blockId]
+                        if (blockId == "hashTypes") {
+                            value = metadata.hashType
+                        }
+
+                        if (value) {
+                            select.initial_option = slack.getOptions(blockId).find(o => o.value == value.toString())
+                        }
+                    })
+                })
                 return slack.modals.push({
                     pushMethod: "responseAction",
                     modal: {
+                        callback_id: "campaignErrors",
                         title: "Errors",
                         close: "OK",
                         blocks: results.errors.map(e => blockFactory.section({
@@ -578,6 +600,8 @@ function setupSlack(){
                     })
                     .catch(error => console.error("Error posting campaign created message\n", error))
 
+                    // await npkCampaign.start(campaignId)
+
                     startHeartbeat({
                         campaignId,
                         channel: channel,
@@ -585,10 +609,10 @@ function setupSlack(){
                         interval: heartbeatInterval
                     })
                 } catch (error) {
-                    console.error("Error creating campaign\n", error)
+                    console.error("Error creating or starting campaign\n", error)
                     slack.postError({
                         channel: channel,
-                        error: error,
+                        error: "Error creating or starting campaign\n",
                         threadTs: threadTs
                     })
                 }
@@ -608,6 +632,26 @@ function setupSlack(){
                 threadTs: payload.message.thread_ts,
                 ts: payload.message.ts
             })
+        })
+
+        // Cancel Campaign
+        slack.interactions.action({
+            actionId: new RegExp("^cancelCampaign_.*")
+        }, (payload, respond) => {
+            let options = JSON.parse(payload.actions.first().value)
+            npkCampaign.cancel(options.campaignId)
+            .then(data => {
+                console.log(data)
+                startHeartbeat({
+                    campaignId: options.campaignId,
+                    interval: options.interval,
+                    channel: payload.channel.id,
+                    threadTs: payload.message.thread_ts,
+                    ts: payload.message.ts
+                })
+            })
+            
+            return undefined
         })
 
         return {
@@ -638,6 +682,14 @@ function setupSlack(){
             if (!metadata.maskEnabled && !metadata.wordlistEnabled) {
                 errors.push("Attack type not specified")
             }
+
+            let hashFile = slack.getSelectedOption({
+                blockId: "hashFile",
+                view: view
+            })
+            if (isFalsy(hashFile)) {
+                errors.push("Hash file not selected")
+            }
         
             if (errors.length > 0){
                 return {
@@ -648,10 +700,7 @@ function setupSlack(){
             let idealInstance = metadata[`ideal${selectedInstance.toUpperCase()}Instance`]
             let data: any = {
                 hashType,
-                hashFile: `uploads/${slack.getSelectedOption({
-                    blockId: "hashFile",
-                    view: view
-                })}`,
+                hashFile: `uploads/${hashFile}`,
                 region: idealInstance.az.slice(0, idealInstance.az.length - 1),
                 availabilityZone: idealInstance.az,
                 priceTarget: idealInstance.price,
@@ -673,12 +722,11 @@ function setupSlack(){
                     view: view,
                     blockId: "wordlist"
                 })}`
-                data.rulesFiles = [
-                    ...slack.getSelectedOptions({
-                        view: view,
-                        blockId: "rules"
-                    })?.map(r => `rules/${r}`)
-                ]
+
+                data.rulesFiles = slack.getSelectedOptions({
+                    view: view,
+                    blockId: "rules"
+                }).map(r => `rules/${r}`)
             }
             
             return {
@@ -703,7 +751,7 @@ function setupSlack(){
                         kill(`Campaign \`${options.campaignId}\` not found`)
                         return
                     }
-                    if (!result.active || result.status.iEquals("available")) {
+                    if (result.status.iEquals("available")) {
                         kill(`Campaign \`${options.campaignId}\` hasn't started`)
                         return
                     }
@@ -716,12 +764,18 @@ function setupSlack(){
                                 text: "Campaign Status"
                             }),
                             blockFactory.actions({
-                                blockId: `campaignStatusRefreshBlock_${options.campaignId}`,
+                                blockId: `campaignStatusBlock_${options.campaignId}`,
                                 elements: [
                                     blockFactory.button({
                                         text: "Refresh",
                                         actionId: `campaignStatusRefresh_${options.campaignId}`,
                                         style: "primary",
+                                        value: JSON.stringify(options)
+                                    }),
+                                    blockFactory.button({
+                                        text: "Cancel",
+                                        actionId: `cancelCampaign_${options.campaignId}`,
+                                        style: "danger",
                                         value: JSON.stringify(options)
                                     })
                                 ]
@@ -799,18 +853,8 @@ async function initialize() {
     setupSlack()
 }
 
-// apiRequirements.campaigns.create
-// await npkCampaign.create(req.body)
-// await npkCampaign.start(req.params.campaignId)
-
-// await npkCampaign.get(req.params.campaignId)
-// await npkCampaign.cancel(req.params.campaignId)
-
-// await npkCampaign.status(req.params.campaignId)
-
 // await npkS3.getObject(req.s3.bucket, `${req.s3.keyPrefix}/${req.params.file}`)
 // result.Body.toString()
-// await npkS3.deleteObject(req.s3.bucket, `${req.s3.keyPrefix}/${req.params.file}`)
 
 const plugin: Plugin = async (s) => {
     slack = s
