@@ -1,10 +1,11 @@
-import { DynamoDB, config, EC2 } from "aws-sdk"
+import { DynamoDB, config } from "aws-sdk"
 import { AttributeValue as ddbTypes } from 'dynamodb-data-types'
 
 import { settings } from "@npk/settings"
 import { npkCognito } from "./npk-cognito"
 import { npkS3 } from "./npk-s3"
 import { request } from "./http-utils"
+import { basename } from "path"
 
 const campaignUrl = `https://${settings.APIGATEWAY_URL}/v1/userproxy/campaign`
 
@@ -68,8 +69,8 @@ class NpkDb {
         .then((data) => {
             var result: Array<any> = [];
 
-            data.Items?.forEach(function(s) {
-              var newData = DynamoDB.Converter.unmarshall(s);
+            data.Items?.forEach((s) => {
+              let newData = DynamoDB.Converter.unmarshall(s);
               delete newData.userid;
 
               result.push(newData)
@@ -108,27 +109,27 @@ export class NpkCampaign {
     }
 
     public async create(order: any) {
+        console.log("Creating campaign")
+
         order.hashFileUrl = await npkS3.getSignedUrl('getObject', {
             Bucket: settings.USERDATA_BUCKET,
             Key: `self/${order.hashFile}`,
             Expires: 3600
         })
     
-        let params = {
+        let result = await request(npkCognito.signAPIRequest({
             method: 'POST',
             url: campaignUrl,
             headers: {},
             body: JSON.stringify(order),
-        }
-        let result = await request(npkCognito.signAPIRequest(params))
-        return result
+        }))
+        return result.data
     }
 
     public get(campaignId: string) {
         return this.db.select(`self:campaigns:${campaignId}`, "Campaigns")
         .then(data => data.first())
     }
-
     public getNodes(campaignId: string) {
         return this.db.select(`self:${campaignId}:nodes:`, "Campaigns")
     }
@@ -141,34 +142,29 @@ export class NpkCampaign {
     }
 
     public async start(campaignId: string) {
-        let params = {
+        console.log(`Starting campaign ${campaignId}`)
+        let result = await request(npkCognito.signAPIRequest({
             method: 'PUT',
             url: `${campaignUrl}/${campaignId}`,
             headers: {},
             body: ""
-        }
-        let result = await request(npkCognito.signAPIRequest(params))
-        return result        
+        }))
+        return result.data
     }
 
     public async cancel(campaignId: string) {
-        let params = {
+        console.log(`Cancelling campaign ${campaignId}`)
+        let result = await request(npkCognito.signAPIRequest({
             method: 'DELETE',
             url: `${campaignUrl}/${campaignId}`,
             headers: {},
             body: ""
-        };
-        
-        let data = await request(npkCognito.signAPIRequest(params))
-        if (typeof data != "object") {
-            try {
-                data = JSON.parse(data);
-            } catch (e) {
-                data = {msg: "Error parsing response JSON.", success: false};
-            }
-        }
-        return data        
+        }))
+        console.log("Cancel result:")
+        console.log(result.data)
+        return result.data        
     }
+
     public edit(campaignId: string, values: any) {
         return this.db.edit(`self:campaigns:${campaignId}`, "Campaigns", values)
     }
@@ -187,22 +183,41 @@ export class NpkCampaign {
         }
 
         return result
-        // let campaign = result[0][Object.keys(result[0]).first()]
-        // if (!campaign) {
-        //     return null
-        // }
+    }
 
-        // return {
-        //     active: campaign.active as boolean,
-        //     status: campaign.status as string,
-        //     startTime: campaign.startTime as number,
-        //     estimatedEndTime: campaign.estimatedEndTime as number,
-        //     hashRate: campaign.hashRate,
-        //     progress: campaign.progress,
-        //     recoveredHashes: campaign.recoveredHashes,
-        //     rejectedPercentage: campaign.rejectedPercentage,
-        //     performance: campaign.performance
-        // }
+    public async potFiles(campaignId: string): Promise<Array<{name: string, data: Buffer}>> {
+        try {
+            let potFiles: Array<{name: string, data: Buffer}> = []
+            let { bucket, keyPrefix, region } = npkS3.getS3Info("campaign")
+            let result = await npkS3.listObjects(bucket, `${keyPrefix}/${campaignId}/potfiles`, region)
+            if (result.Contents) {
+                for (const x of result.Contents) {
+                    if (!x.Key) {
+                        continue
+                    }
+    
+                    let { Body } = await npkS3.getObject(bucket, x.Key, region)
+                    if (!Body) {
+                        continue
+                    }
+
+                    let data = isBuffer(Body) ? Body : Buffer.alloc(Body.toString().length, Body.toString())
+                    potFiles.push({
+                        name: basename(x.Key),
+                        data: data
+                    })
+                }
+            }
+            
+            return potFiles
+        } catch (error) {
+            console.log(error)
+            return []
+        }
+
+        function isBuffer(obj: any): obj is Buffer {
+            return (obj as Buffer).buffer !== undefined
+        }
     }
 }
 export const npkCampaign = new NpkCampaign()
