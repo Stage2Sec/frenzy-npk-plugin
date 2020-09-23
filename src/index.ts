@@ -567,7 +567,7 @@ function setupSlack(){
                 try {
                     let { campaignId } = await npkCampaign.create(results.data)
 
-                    // Can fire and forget this since we don't need really care
+                    // Can fire and forget this since we don't really need to care
                     // whether this succeeds or fails
                     slack.postMessage({
                         channel: channel,
@@ -577,7 +577,7 @@ function setupSlack(){
                     })
                     .catch(error => console.error("Error posting campaign created message\n", error))
 
-                    // await npkCampaign.start(campaignId)
+                    await npkCampaign.start(campaignId)
 
                     startHeartbeat({
                         campaignId,
@@ -616,17 +616,19 @@ function setupSlack(){
             actionId: new RegExp("^cancelCampaign_.*")
         }, (payload, respond) => {
             let options = JSON.parse(payload.actions.first().value)
+            if (!options.cancelling) {
             npkCampaign.cancel(options.campaignId)
             .then(data => {
-                console.log(data)
                 startHeartbeat({
                     campaignId: options.campaignId,
                     interval: options.interval,
                     channel: payload.channel.id,
                     threadTs: payload.message.thread_ts,
-                    ts: payload.message.ts
+                        ts: payload.message.ts,
+                        cancelling: true
                 })
             })
+            }
             
             return undefined
         })
@@ -717,6 +719,7 @@ function setupSlack(){
             threadTs: string,
             ts?: string,
             interval: number,
+            cancelling?: boolean
         }) {
             kill()
             heartbeat()
