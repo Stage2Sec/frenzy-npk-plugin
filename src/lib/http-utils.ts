@@ -1,5 +1,6 @@
 import https from "https"
 import urlParser from "url"
+import { IncomingMessage, ClientRequest } from "http"
 
 export function prepare(options: any): any {
     if (options.url){
@@ -22,7 +23,11 @@ export function prepare(options: any): any {
         }
     }
 }
-export function request(options: any): Promise<any> {
+export function request(options: any): Promise<{
+    request: ClientRequest,
+    response: IncomingMessage,
+    data: any
+}> {
     return new Promise((success, failure) => {
         prepare(options)
 
@@ -30,14 +35,25 @@ export function request(options: any): Promise<any> {
             response.on("data", data => {
                 data = data.toString()
                 try {
-                    success(JSON.parse(data))
+                    data = JSON.parse(data)
                 } catch {
-                    success(data)
+                    // Do nothing on purpose
                 }
+                
+                let result = {
+                    request,
+                    response,
+                    data
+                }
+                console.log(result)
+                success(result)
             })
             response.on("error", error => {
                 console.log(error)
-                failure(error)
+                failure({
+                    response,
+                    error
+                })
             })
         })
 
