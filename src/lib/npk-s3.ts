@@ -1,5 +1,6 @@
 import { S3, config } from "aws-sdk"
 import { basename } from "path"
+import { settings } from "@npk/settings"
 
 export class NpkS3 {
     private s3: S3
@@ -41,36 +42,50 @@ export class NpkS3 {
         }
     }
 
-    public listBucketContents(bucket: string, path: string, region: string): Promise<S3.ListObjectsOutput> {
+    public getS3Info(type: "hash" | "wordlist" | "rule" | "campaign", forceRegion?: string) {
+        let region = forceRegion || config.region || ""
+        switch(type){
+            case "hash":
+                return {
+                    bucket: settings.USERDATA_BUCKET,
+                    keyPrefix: "self/uploads",
+                    region: region
+                }
+            case "wordlist":
+                return {
+                    bucket: settings.DICTIONARY_BUCKETS[region],
+                    keyPrefix: "wordlist",
+                    region: region
+                }
+            case "rule":
+                return {
+                    bucket: settings.DICTIONARY_BUCKETS[region],
+                    keyPrefix: "rules",
+                    region: region
+                }
+            case "campaign":
+                return {
+                    bucket: settings.USERDATA_BUCKET,
+                    keyPrefix: "self/campaigns",
+                    region: region
+                }
+        }
+    }
+
+    public listObjects(bucket: string, path: string, region: string): Promise<S3.ListObjectsOutput> {
         path = this.replaceSelf(path)
         var params = {
             Bucket: bucket,
             Prefix: path,
             MaxKeys: 100
         };
-
-        return new Promise((success, failure) => {
-            this[this.s3ForRegion(region)].listObjects(params, (err, data) => {
-                if (err) {
-                    return failure(err);
-                }
-
-                return success(data);
-            });
-        });
+        
+        return this[this.s3ForRegion(region)].listObjects(params).promise()
     }
 
     public async listBucketFiles(bucket: string, path: string, region: string) {
-        let files: Array<string> = []
-        let result = await this.listBucketContents(bucket, path, region)
-        if (result.Contents) {
-            for (const content of result.Contents) {
-                let key = content.Key || ""
-                files.push(basename(key))
-            }
-        }
-        
-        return files
+        let result = await this.listObjects(bucket, path, region)
+        return result.Contents?.map(x => basename(x.Key || "")) || []
     }
 
     public putObject(bucket: string, key: string, data: any, region: string): Promise<S3.PutObjectOutput> {
@@ -82,17 +97,7 @@ export class NpkS3 {
             ContentType: "text/plain"
         }
 
-        return new Promise((success, failure) => {
-            this[this.s3ForRegion(region)].putObject(params, (err, result) => {
-                if (err) {
-                    console.log("Upload failed. " + err);
-                    return failure(err)
-                }
-    
-                console.log("Success");
-                return success(result);
-            })
-        })
+        return this[this.s3ForRegion(region)].putObject(params).promise()
     }
 
     public getObject(bucket: string, key: string, region: string): Promise<S3.GetObjectOutput> {
@@ -102,15 +107,7 @@ export class NpkS3 {
             Key: key
         };
 
-        return new Promise((success, failure) => {
-            this[this.s3ForRegion(region)].getObject(params, (err, data) => {
-                if (err) {
-                    return failure(err);
-                }
-
-                return success(data);
-            });
-        });
+        return this[this.s3ForRegion(region)].getObject(params).promise()
     }
 
     public headObject(bucket: string, key: string, region: string): Promise<S3.HeadObjectOutput> {
@@ -120,15 +117,7 @@ export class NpkS3 {
             Key: key
         };
 
-        return new Promise((success, failure) => {
-            this[this.s3ForRegion(region)].headObject(params, (err, data) => {
-                if (err) {
-                    return failure(err);
-                }
-
-                return success(data);
-            });
-        });
+        return this[this.s3ForRegion(region)].headObject(params).promise()
     }
 
     public deleteObject(bucket: string, key: string, region: string): Promise<S3.DeleteObjectOutput> {
@@ -138,15 +127,7 @@ export class NpkS3 {
             Key: key
         };
 
-        return new Promise((success, failure) => {
-            this[this.s3ForRegion(region)].deleteObject(params, (err, data) => {
-                if (err) {
-                    return failure(err);
-                }
-
-                return success(data);
-            });
-        });
+        return this[this.s3ForRegion(region)].deleteObject(params).promise()
     }
 
     public getSignedUrl(action: string, params: any) {

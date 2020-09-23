@@ -23,32 +23,9 @@ const helpText: string =
 `- *Create and start a campaign.* Click the \`Create Campaign\` button and fill out the necessary fields
 - *Upload a hash file to crack.* Send the \`.npk\` message with the file attached`
 
-function getS3Info(type: "hash" | "wordlist" | "rule", forceRegion?: string) {
-    let region = forceRegion || config.region || ""
-    switch(type){
-        case "hash":
-            return {
-                bucket: settings.USERDATA_BUCKET,
-                keyPrefix: "self/uploads",
-                region: region
-            }
-        case "wordlist":
-            return {
-                bucket: settings.DICTIONARY_BUCKETS[region],
-                keyPrefix: "wordlist",
-                region: region
-            }
-        case "rule":
-            return {
-                bucket: settings.DICTIONARY_BUCKETS[region],
-                keyPrefix: "rules",
-                region: region
-            }
-    }
-}
 async function listFiles(type: "hash" | "wordlist" | "rule", forceRegion?: string): Promise<Array<string>> {
     try {
-        let { bucket, keyPrefix, region } = getS3Info(type, forceRegion)
+        let { bucket, keyPrefix, region } = npkS3.getS3Info(type, forceRegion)
         return await npkS3.listBucketFiles(bucket, keyPrefix, region)
     } catch (error) {
         console.error(`Error getting ${type} files: `, error)
@@ -57,7 +34,7 @@ async function listFiles(type: "hash" | "wordlist" | "rule", forceRegion?: strin
 }
 
 async function uploadHashFile(name: string, data: any) {
-    let { bucket, keyPrefix, region } = getS3Info("hash")
+    let { bucket, keyPrefix, region } = npkS3.getS3Info("hash")
     let result = await npkS3.putObject(bucket, `${keyPrefix}/${name}`, data, region)
     return result
 }
