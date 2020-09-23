@@ -4,6 +4,7 @@ import { config } from "aws-sdk"
 import { createCommand } from "commander"
 import stringArgv from 'string-argv';
 import { View, Button, SectionBlock, PlainTextElement, HeaderBlock, KnownBlock, ExternalSelect, StaticSelect } from "@slack/web-api";
+import AdmZip from "adm-zip"
 
 import { Slack, PluginInfo, Plugin, blockFactory, isFalsy, ActionBlockElement } from "@frenzy/index"
 
@@ -155,7 +156,8 @@ interface SubCommandInfo {
 function setupSlack(){
     let subCommands = [
         createCampaignInteractions(),
-        //manageCampaignsInteractions()
+        //manageCampaignsInteractions(),
+        testInteractions()
     ]
 
     // Setup dot commands
@@ -617,17 +619,17 @@ function setupSlack(){
         }, (payload, respond) => {
             let options = JSON.parse(payload.actions.first().value)
             if (!options.cancelling) {
-            npkCampaign.cancel(options.campaignId)
-            .then(data => {
-                startHeartbeat({
-                    campaignId: options.campaignId,
-                    interval: options.interval,
-                    channel: payload.channel.id,
-                    threadTs: payload.message.thread_ts,
+                npkCampaign.cancel(options.campaignId)
+                .then(data => {
+                    startHeartbeat({
+                        campaignId: options.campaignId,
+                        interval: options.interval,
+                        channel: payload.channel.id,
+                        threadTs: payload.message.thread_ts,
                         ts: payload.message.ts,
                         cancelling: true
+                    })
                 })
-            })
             }
             
             return undefined
@@ -735,7 +737,15 @@ function setupSlack(){
                         kill(`Campaign \`${options.campaignId}\` hasn't started`)
                         return
                     }
-        
+
+                    // NPK doesn't stop the campaign if all nodes are in a done state
+                    // so we must manually stop it
+                    let nodesAreDone = result.nodes.length > 0 && result.nodes.every(node => node.status.iEquals("error") || node.status.iEquals("completed"))
+                    if (!options.cancelling && nodesAreDone) {
+                        await npkCampaign.cancel(options.campaignId)
+                        options.cancelling = true
+                    }
+
                     let message = {
                         channel: options.channel,
                         text: "Status",
@@ -767,24 +777,31 @@ function setupSlack(){
                             })
                         ]
                     }
+
+                    let campaignIsDone = result.status.iEquals("completed") || result.status.iEquals("error")
+                    if (campaignIsDone){
+                        // Remove the refresh and cancel buttons since the campaign is done
+                        message.blocks.splice(1, 1)
+                    }
+
                     if (options.ts) {
                         await slack.updateMessage({
                             ...message,
                             ts: options.ts,
                         })
                     } else {
-                        let postResult: any = await slack.postMessage({
+                        await slack.postMessage({
                             ...message,
                             thread_ts: options.threadTs
                         })
-                        options.ts = postResult.ts
-                    }
-                    if (result.status.iEquals("completed") || result.status.iEquals("error")){
-                        kill()
-                        return
+                        .then((result: any) => options.ts = result.ts)
                     }
                     
-                    campaignTimeouts[options.campaignId] = setTimeout(async () => await heartbeat(), options.interval)
+                    if (campaignIsDone) {
+                        onFinished()
+                    } else {
+                        campaignTimeouts[options.campaignId] = setTimeout(async () => await heartbeat(), options.interval)
+                    }
                 } catch(error) {
                     console.error("Error heartbeating\n", error)
                     kill("An unexpected error occurred while retrieving the campaign's status")
@@ -802,6 +819,32 @@ function setupSlack(){
                         error: error
                     })
                 }
+            }
+            async function onFinished(){
+                try {
+                    let files = await npkCampaign.potFiles(options.campaignId)
+                    if (files.length == 0) {
+                        return
+                    }
+
+                    let zip: AdmZip = new AdmZip()
+                    files.forEach(file => {
+                        zip.addFile(file.name, file.data)
+                    })
+
+                    let file = zip.toBuffer()
+                    await slack.client.files.upload({
+                        channels: options.channel,
+                        thread_ts: options.threadTs,
+                        filename: `${options.campaignId}-potfiles.zip`,
+                        file: file,
+                        filetype: "application/zip"
+                    })
+                } catch (error) {
+                    console.error("Error executing while executing campaign completion code\n", error)
+                }
+
+                kill()
             }
         }
     }
@@ -821,6 +864,23 @@ function setupSlack(){
             ]
         }
     }
+
+    function testInteractions(): SubCommandInfo {
+        slack.interactions.action({
+            actionId: "testButton"
+        }, (payload, respond) => {
+            console.log("Test button pushed")
+            return undefined
+        })
+        return {
+            mainMenuItems: [
+                blockFactory.button({
+                    text: "Test",
+                    actionId: "testButton"
+                })
+            ]
+        }
+    }
 }
 
 async function initialize() {
@@ -832,9 +892,6 @@ async function initialize() {
 
     setupSlack()
 }
-
-// await npkS3.getObject(req.s3.bucket, `${req.s3.keyPrefix}/${req.params.file}`)
-// result.Body.toString()
 
 const plugin: Plugin = async (s) => {
     slack = s
