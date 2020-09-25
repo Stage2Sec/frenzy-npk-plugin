@@ -104,6 +104,14 @@ class NpkDb {
 export class NpkCampaign {
     private db: NpkDb = new NpkDb()
 
+    private isSuccess(data: any) {
+        if (data.success === undefined) {
+            return true
+        }
+
+        return data.success
+    }
+
     public init() {
         this.db.init()
     }
@@ -117,13 +125,17 @@ export class NpkCampaign {
             Expires: 3600
         })
     
-        let result = await request(npkCognito.signAPIRequest({
+        let { data } = await request(npkCognito.signAPIRequest({
             method: 'POST',
             url: campaignUrl,
             headers: {},
             body: JSON.stringify(order),
         }))
-        return result.data
+
+        if (!this.isSuccess(data)) {
+            throw data
+        }
+        return data
     }
 
     public get(campaignId: string) {
@@ -143,26 +155,30 @@ export class NpkCampaign {
 
     public async start(campaignId: string) {
         console.log(`Starting campaign ${campaignId}`)
-        let result = await request(npkCognito.signAPIRequest({
+        let { data } = await request(npkCognito.signAPIRequest({
             method: 'PUT',
             url: `${campaignUrl}/${campaignId}`,
             headers: {},
             body: ""
         }))
-        return result.data
+        if (!this.isSuccess(data)) {
+            throw data
+        }
+        return data
     }
 
     public async cancel(campaignId: string) {
         console.log(`Cancelling campaign ${campaignId}`)
-        let result = await request(npkCognito.signAPIRequest({
+        let { data } = await request(npkCognito.signAPIRequest({
             method: 'DELETE',
             url: `${campaignUrl}/${campaignId}`,
             headers: {},
             body: ""
         }))
-        console.log("Cancel result:")
-        console.log(result.data)
-        return result.data        
+        if (!this.isSuccess(data)) {
+            throw data
+        }
+        return data       
     }
 
     public edit(campaignId: string, values: any) {
@@ -175,10 +191,30 @@ export class NpkCampaign {
             this.getNodes(campaignId),
             this.getEvents(campaignId)
         ])
-        
-        let result: any = {
+        if (!data[0]) {
+            return undefined
+        }
+
+        let instances: {
+            [instanceId: string]: Array<any>
+        } = {}
+        data[1].forEach(node => {
+            let instanceId = node.keyid.split(":")[2]
+            if (!instances[instanceId]) {
+                instances[instanceId] = []
+            }
+
+            instances[instanceId].push(node)
+        })
+
+        let result = {
             ...data[0],
-            nodes: data[1],
+            instances: Object.keys(instances).map(id => {
+                return {
+                    id: id,
+                    node: instances[id].last()
+                }
+            }),
             events: data[2]
         }
 

@@ -63,6 +63,20 @@ export class NpkPricing {
         await this.getInstancePrices()
     }
 
+    public getHashTypeByName(name: string): number {
+        return this.hashTypes[name]
+    }
+    public getHashNameByType(type: number): string {
+        for (const key in this.hashTypes) {
+            if (Object.prototype.hasOwnProperty.call(this.hashTypes, key)) {
+                if (this.hashTypes[key] == type) {
+                    return key
+                }
+            }
+        }
+        return ""
+    }
+
     public getSpotPriceHistory(instanceType: string, forceRegion?: string) {
         var regions: Array<EC2> = [];
         switch (forceRegion) {
