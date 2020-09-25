@@ -14,7 +14,6 @@ import { npkS3 } from "./lib/npk-s3"
 import { npkCampaign } from "./lib/npk-campaign"
 import { settings } from "@npk/settings"
 import { setTimeout } from "timers";
-import { EventEmitter } from "events";
 
 let slack: Slack
 
@@ -33,9 +32,21 @@ async function listFiles(type: "hash" | "wordlist" | "rule", forceRegion?: strin
     }
 }
 
-async function uploadHashFile(name: string, data: any) {
+async function uploadHashFile(options: {
+    channel: string,
+    user: string,
+    threadTs: string,
+    name: string,
+    data: any
+}) {
     let { bucket, keyPrefix, region } = npkS3.getS3Info("hash")
-    let result = await npkS3.putObject(bucket, `${keyPrefix}/${name}`, data, region)
+    let result = await npkS3.putObject(bucket, `${keyPrefix}/${options.name}`, options.data, region)
+    await slack.postMessage({
+        channel: options.channel,
+        text: `<@${options.user}> \`${options.name}\` uploaded`,
+        icon_emoji: ":thumbsup:",
+        thread_ts: options.threadTs
+    })
     return result
 }
 async function updateInstances(view: View, metadata: any) {
@@ -156,7 +167,8 @@ function setupSlack(){
     let subCommands = [
         createCampaignInteractions(),
         //manageCampaignsInteractions(),
-        testInteractions()
+        uploadHashesInteractions()
+        // testInteractions()
     ]
 
     // Setup dot commands
@@ -168,12 +180,12 @@ function setupSlack(){
             if (event.files) {
                 event.files.forEach(async (file: any) => {
                     let contents = await slack.getFile(file.url_private)
-                    await uploadHashFile(file.name, contents)
-                    await slack.postMessage({
+                    await uploadHashFile({
+                        threadTs: threadTs,
                         channel: event.channel,
-                        text: `<@${event.user}> \`${file.name}\` uploaded`,
-                        icon_emoji: ":thumbsup:",
-                        thread_ts: threadTs
+                        user: event.user,
+                        name: file.name,
+                        data: contents
                     })
                 });
                 return
@@ -196,7 +208,8 @@ function setupSlack(){
                     blockFactory.actions({
                         blockId: "npkMenu",
                         elements: subCommands.mapAndFlatten(c => c.mainMenuItems as Array<ActionBlockElement>)
-                    })
+                    }),
+                    ...subCommands.mapAndFlatten(c => c.subCommandMenuItems as Array<KnownBlock>)
                 ]
             })
         } catch (error) {
@@ -964,6 +977,90 @@ function setupSlack(){
                 blockFactory.button({
                     actionId: "manageCampaignsModal",
                     text: "Manage Campaigns"
+                })
+            ]
+        }
+    }
+
+    function uploadHashesInteractions(): SubCommandInfo {
+        slack.interactions.action({
+            actionId: "openUploadHashes"
+        }, (payload, respond) => {
+            let metadata = {
+                message: {
+                    channel: payload.channel.id,
+                    user: payload.user.id,
+                    threadTs: payload.message.thread_ts
+                }
+            }
+            slack.modals.open({
+                trigger_id: payload.trigger_id,
+                modal: {    
+                    callback_id: "uploadHashes",                
+                    close: "Close",
+                    title: "Upload Hashes",
+                    submit: "Upload",
+                    blocks: [
+                        blockFactory.input({
+                            blockId: "fileNameBlock",
+                            label: "File Name",
+                            element: blockFactory.plainTextInput({
+                                actionId: "fileName"
+                            })
+                        }),
+                        blockFactory.input({
+                            blockId: "hashesBlock",
+                            label: "Hashes (all of them must be the same hash type)",
+                            element: blockFactory.plainTextInput({
+                                actionId: "hashes",
+                                multiline: true
+                            })
+                        })
+                    ],
+                    private_metadata: JSON.stringify(metadata)
+                }
+            })
+        })
+
+        slack.interactions.viewSubmission({
+            callbackId: "uploadHashes"
+        }, async (payload) => {
+            let { message: { channel, user, threadTs } } = slack.modals.getMetadata(payload.view)
+            try {
+                let fileName = basename(slack.getPlainTextValue({
+                    view: payload.view,
+                    blockId: "fileNameBlock",
+                    actionId: "fileName"
+                }))
+    
+                let hashes = slack.getPlainTextValue({
+                    view: payload.view,
+                    blockId: "hashesBlock",
+                    actionId: "hashes"
+                })
+
+                await uploadHashFile({
+                    channel: channel,
+                    threadTs: threadTs,
+                    user: user,
+                    name: fileName,
+                    data: hashes
+                })
+            } catch (error) {
+                console.error("Error uploading user supplied hashes", error)
+                slack.postError({
+                    channel: channel,
+                    threadTs: threadTs,
+                    error: "Error uploading hashes"
+                })
+            }
+        })
+
+        return {
+            mainMenuItems: [
+                blockFactory.button({
+                    text: "Upload Hashes",
+                    actionId: "openUploadHashes"
                 })
             ]
         }
