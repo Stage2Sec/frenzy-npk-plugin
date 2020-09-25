@@ -3,16 +3,15 @@ import http from "http"
 import { config } from "aws-sdk"
 import { createCommand } from "commander"
 import stringArgv from 'string-argv';
-import { View, Button, SectionBlock, PlainTextElement, HeaderBlock, KnownBlock, ExternalSelect, StaticSelect } from "@slack/web-api";
+import { View, Button, SectionBlock, PlainTextElement, HeaderBlock, KnownBlock, StaticSelect } from "@slack/web-api";
 import AdmZip from "adm-zip"
 
-import { Slack, PluginInfo, Plugin, blockFactory, isFalsy, ActionBlockElement } from "@frenzy/index"
+import { Slack, Plugin, blockFactory, isFalsy, ActionBlockElement } from "@frenzy/index"
 
 import { npkCognito } from "./lib/npk-cognito"
 import { npkPricing } from "./lib/npk-pricing"
 import { npkS3 } from "./lib/npk-s3"
 import { npkCampaign } from "./lib/npk-campaign"
-import { request } from "./lib/http-utils"
 import { settings } from "@npk/settings"
 import { setTimeout } from "timers";
 import { EventEmitter } from "events";
@@ -564,38 +563,7 @@ function setupSlack(){
                 })
             };
             
-            (async function(){
-                let { channel, user, threadTs } = metadata.message
-                try {
-                    let { campaignId } = await npkCampaign.create(results.data)
-
-                    // Can fire and forget this since we don't really need to care
-                    // whether this succeeds or fails
-                    slack.postMessage({
-                        channel: channel,
-                        text: `<@${user}>, campaign created`,
-                        icon_emoji: ":thumbsup:",
-                        thread_ts: threadTs
-                    })
-                    .catch(error => console.error("Error posting campaign created message\n", error))
-
-                    await npkCampaign.start(campaignId)
-
-                    startHeartbeat({
-                        campaignId,
-                        channel: channel,
-                        threadTs: threadTs,
-                        interval: heartbeatInterval
-                    })
-                } catch (error) {
-                    console.error("Error creating or starting campaign\n", error)
-                    slack.postError({
-                        channel: channel,
-                        error: "Error creating or starting campaign\n",
-                        threadTs: threadTs
-                    })
-                }
-            })()
+            createCampaign(metadata, results.data)
             return undefined // Return undefined so it doesn't wait for the async function to complete
         })
 
@@ -609,7 +577,8 @@ function setupSlack(){
                 interval: options.interval,
                 channel: payload.channel.id,
                 threadTs: payload.message.thread_ts,
-                ts: payload.message.ts
+                ts: payload.message.ts,
+                cancelling: options.cancelling
             })
         })
 
@@ -714,6 +683,86 @@ function setupSlack(){
                 data
             }
         }
+        async function createCampaign(metadata: any, data: any) {
+            let { channel, user, threadTs } = metadata.message
+            try {
+                let { campaignId } = await npkCampaign.create(data)
+
+                function getLabeledValue(label: string, value: string) {
+                    return `*${label}:* ${value}`
+                }
+                function createField(label: string, value: string) {
+                    return blockFactory.markdown(getLabeledValue(label, value))
+                }
+                
+                let attackInfoFields: Array<any> = []
+                if (data.mask) {
+                    attackInfoFields.push(createField("Mask", data.mask))
+                }
+                if (data.dictionaryFile) {
+                    attackInfoFields.push(createField("Wordlist", basename(data.dictionaryFile)))
+                }
+                if (data.rulesFiles && data.rulesFiles.length > 0) {
+                    attackInfoFields.push(createField("Rules", data.rulesFiles.map(x => basename(x)).join(", ")))
+                }
+
+                // Can fire and forget this since we don't really need to care
+                // whether this succeeds or fails
+                slack.postMessage({
+                    channel: channel,
+                    text: "Created",
+                    icon_emoji: ":thumbsup:",
+                    thread_ts: threadTs,
+                    blocks: [
+                        blockFactory.section({
+                            text: `<@${user}> created campaign`,
+                            markdown: true
+                        }),
+                        blockFactory.section({
+                            fields: [
+                                createField("Id", campaignId)
+                            ]
+                        }),
+                        blockFactory.section({
+                            fields: [
+                                createField("Hash Type", npkPricing.getHashNameByType(data.hashType)),
+                                createField("Hash File", basename(data.hashFile))
+                            ]
+                        }),
+                        blockFactory.section({
+                            fields: [
+                                createField("Region", data.region),
+                                createField("Availability Zone", data.availabilityZone),
+                                createField("Type", data.instanceType),
+                                createField("Count", data.instanceCount),
+                                createField("Duration", `${data.instanceDuration} hour(s)`),
+                                createField("Target Price/Hr", toDollarString(data.priceTarget))
+                            ]
+                        }),
+                        blockFactory.section({
+                            fields: attackInfoFields
+                        })
+                    ]
+                })
+                .catch(error => console.error("Error posting campaign created message\n", error))
+
+                await npkCampaign.start(campaignId)
+
+                startHeartbeat({
+                    campaignId,
+                    channel: channel,
+                    threadTs: threadTs,
+                    interval: heartbeatInterval
+                })
+            } catch (error) {
+                console.error("Error creating or starting campaign\n", error)
+                slack.postError({
+                    channel: channel,
+                    error: `Error creating or starting campaign\n${error.toString()}`,
+                    threadTs: threadTs
+                })
+            }
+        }
 
         function startHeartbeat(options: {
             campaignId: string,
@@ -730,6 +779,23 @@ function setupSlack(){
                 try {
                     let result = await npkCampaign.status(options.campaignId)
                     if (!result) {
+                        if (options.cancelling && options.ts) {
+                            await slack.updateMessage({
+                                channel: options.channel,
+                                ts: options.ts,
+                                text: "Deleted",
+                                blocks: [
+                                    blockFactory.section({
+                                        text: `Campaign \`${options.campaignId}\` deleted`,
+                                        markdown: true
+                                    })
+                                ]
+                            })
+                            console.log("Campaign has been deleted. Executing finishing code")
+                            onFinished()
+                            return
+                        }
+
                         kill(`Campaign \`${options.campaignId}\` not found`)
                         return
                     }
@@ -738,10 +804,11 @@ function setupSlack(){
                         return
                     }
 
-                    // NPK doesn't stop the campaign if all nodes are in a done state
+                    // NPK doesn't stop the campaign if all instances are in a finished state
                     // so we must manually stop it
-                    let nodesAreDone = result.nodes.length > 0 && result.nodes.every(node => node.status.iEquals("error") || node.status.iEquals("completed"))
-                    if (!options.cancelling && nodesAreDone) {
+                    let instancesFinished = result.instances.length > 0 && result.instances.every(instance => isFinished(instance.node))
+                    if (!options.cancelling && instancesFinished) {
+                        console.log("Detected all instances are in a finished state")
                         await npkCampaign.cancel(options.campaignId)
                         options.cancelling = true
                     }
@@ -778,8 +845,8 @@ function setupSlack(){
                         ]
                     }
 
-                    let campaignIsDone = result.status.iEquals("completed") || result.status.iEquals("error")
-                    if (campaignIsDone){
+                    let campaignIsFinished = isFinished(result)
+                    if (campaignIsFinished){
                         // Remove the refresh and cancel buttons since the campaign is done
                         message.blocks.splice(1, 1)
                     }
@@ -797,7 +864,8 @@ function setupSlack(){
                         .then((result: any) => options.ts = result.ts)
                     }
                     
-                    if (campaignIsDone) {
+                    if (campaignIsFinished) {
+                        console.log("Campaign has finished. Executing finishing code")
                         onFinished()
                     } else {
                         campaignTimeouts[options.campaignId] = setTimeout(async () => await heartbeat(), options.interval)
@@ -824,11 +892,16 @@ function setupSlack(){
                 try {
                     let files = await npkCampaign.potFiles(options.campaignId)
                     if (files.length == 0) {
+                        kill()
                         return
                     }
 
+                    let crackedHashes: string | undefined
                     let zip: AdmZip = new AdmZip()
                     files.forEach(file => {
+                        if (file.name.iStartsWith("cracked_hashes")) {
+                            crackedHashes = file.data.toString()
+                        }
                         zip.addFile(file.name, file.data)
                     })
 
@@ -840,11 +913,42 @@ function setupSlack(){
                         file: file,
                         filetype: "application/zip"
                     })
+
+                    let report = {
+                        text: "No hashes cracked",
+                        emoji: ":sadness:"
+                    }
+                    if (crackedHashes) {
+                        report.text = `\`\`\`${crackedHashes}\`\`\``
+                        report.emoji = ":party:"
+                    }
+
+                    await slack.postMessage({
+                        channel: options.channel,
+                        thread_ts: options.threadTs,
+                        text: "Campaign Report",
+                        blocks: [
+                            blockFactory.header({
+                                text: `${report.emoji}Campaign Report${report.emoji}`
+                            }),
+                            blockFactory.section({
+                                text: report.text,
+                                markdown: true
+                            })
+                        ],
+                        reply_broadcast: true
+                    })
                 } catch (error) {
                     console.error("Error executing while executing campaign completion code\n", error)
                 }
 
                 kill()
+            }
+            function isFinished(obj: {status: string}) {
+                if (!obj) {
+                    return false
+                }
+                return obj.status.iEquals("error") || obj.status.iEquals("completed")
             }
         }
     }
@@ -883,7 +987,9 @@ function setupSlack(){
     }
 }
 
-async function initialize() {
+const plugin: Plugin = async (s) => {
+    slack = s
+
     await npkCognito.init()
 
     npkCampaign.init()
@@ -891,17 +997,11 @@ async function initialize() {
     await npkPricing.init()
 
     setupSlack()
-}
 
-const plugin: Plugin = async (s) => {
-    slack = s
-    await initialize()
-
-    let pluginInfo: PluginInfo = {
+    return {
         name: "npk",
         description: "",
         version: "1.0.0"
     }
-    return pluginInfo
 }
 export default plugin
