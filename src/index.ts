@@ -662,14 +662,14 @@ function setupSlack(){
         
             let idealInstance = metadata[`ideal${selectedInstance.toUpperCase()}Instance`]
             let data: any = {
-                hashType,
+                hashType: parseInt(hashType),
                 hashFile: `uploads/${hashFile}`,
                 region: idealInstance.az.slice(0, idealInstance.az.length - 1),
                 availabilityZone: idealInstance.az,
-                priceTarget: idealInstance.price,
+                priceTarget: idealInstance.price * metadata.instanceCount * metadata.instanceDuration,
                 instanceType: idealInstance.type,
-                instanceCount: metadata.instanceCount,
-                instanceDuration: metadata.instanceDuration,
+                instanceCount: metadata.instanceCount.toString(),
+                instanceDuration: metadata.instanceDuration.toString(),
             }
         
             if (metadata.maskEnabled) {
