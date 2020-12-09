@@ -82,6 +82,7 @@ export class NpkCognito {
             if (!this.cognitoUser || !this.cognitoUserSession) {
                return failure("Not initialized!")
             }
+            console.log("Attempting to refresh cognito session")
             this.cognitoUser.refreshSession(this.cognitoUserSession.refreshToken, (error, session) => {
                if (error) {
                   return failure(error)
@@ -91,9 +92,11 @@ export class NpkCognito {
             })
          }))
          await this.retrieveCredentials()
+         console.log("Cognito session refreshed")
          setTimeout(this.refreshSession.bind(this), this.sessionExpiresIn() - 300000)
       } catch (error) {
-         console.error("Failed to refresh AWS session\n", error)
+         console.error("Failed to refresh AWS session\nRetrying in 5 minutes", error)
+         setTimeout(this.refreshSession.bind(this), 300000)
       }
    }
 
