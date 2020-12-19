@@ -1,6 +1,6 @@
 import { Pricing, EC2 } from "aws-sdk"
 
-import { isFalsy } from "@frenzy/index"
+import { isFalsy } from "@sm4rtshr1mp/frenzy-sdk"
 
 export class NpkPricing {
     public spotPrice: any = {}

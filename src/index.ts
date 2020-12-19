@@ -6,7 +6,7 @@ import stringArgv from 'string-argv';
 import { View, Button, SectionBlock, PlainTextElement, HeaderBlock, KnownBlock, StaticSelect } from "@slack/web-api";
 import AdmZip from "adm-zip"
 
-import { Slack, Plugin, blockFactory, isFalsy, ActionBlockElement } from "@frenzy/index"
+import { Slack, Plugin, blockFactory, isFalsy, ActionBlockElement } from "@sm4rtshr1mp/frenzy-sdk"
 
 import { npkCognito } from "./lib/npk-cognito"
 import { npkPricing } from "./lib/npk-pricing"
