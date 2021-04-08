@@ -2,7 +2,7 @@ import { Credentials, CognitoIdentityCredentials, config } from "aws-sdk"
 import { CognitoUser, ICognitoUserPoolData, CognitoUserPool, AuthenticationDetails } from 'amazon-cognito-identity-js'
 import aws4 from 'aws4'
 
-import { settings } from "@npk/settings"
+import { settings } from "../settings"
 import { prepare } from "./http-utils"
 import { setTimeout } from "timers"
 

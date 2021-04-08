@@ -1,7 +1,7 @@
 import { DynamoDB, config } from "aws-sdk"
 import { AttributeValue as ddbTypes } from 'dynamodb-data-types'
 
-import { settings } from "@npk/settings"
+import { settings } from "../settings"
 import { npkCognito } from "./npk-cognito"
 import { npkS3 } from "./npk-s3"
 import { request } from "./http-utils"

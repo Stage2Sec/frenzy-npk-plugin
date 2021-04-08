@@ -1,6 +1,6 @@
 import { S3, config } from "aws-sdk"
 import { basename } from "path"
-import { settings } from "@npk/settings"
+import { settings } from "../settings"
 
 export class NpkS3 {
     private s3: S3

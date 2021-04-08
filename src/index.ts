@@ -1,8 +1,5 @@
+import "./extensions"
 import { basename } from "path"
-import http from "http"
-import { config } from "aws-sdk"
-import { createCommand } from "commander"
-import stringArgv from 'string-argv';
 import { View, Button, SectionBlock, PlainTextElement, HeaderBlock, KnownBlock, StaticSelect } from "@slack/web-api";
 import AdmZip from "adm-zip"
 
@@ -12,7 +9,6 @@ import { npkCognito } from "./lib/npk-cognito"
 import { npkPricing } from "./lib/npk-pricing"
 import { npkS3 } from "./lib/npk-s3"
 import { npkCampaign } from "./lib/npk-campaign"
-import { settings } from "@npk/settings"
 import { setTimeout } from "timers";
 
 let slack: Slack
